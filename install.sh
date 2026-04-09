@@ -58,7 +58,7 @@ for cmd in docker openssl xxd curl; do
   else
     log_warn "$cmd НЕ найден"
     MISSING=$(( MISSING + 1 ))
-  done
+  fi
 done
 
 if (( MISSING > 0 )); then
