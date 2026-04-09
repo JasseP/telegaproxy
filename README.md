@@ -15,6 +15,16 @@ chmod +x mtpx
 ./mtpx apply
 ```
 
+## Обновление на сервере
+
+```bash
+# Игнорировать изменения прав (install.sh делает chmod)
+git config core.fileMode false
+
+# Обновить код
+git pull
+```
+
 ## Команды
 
 ### Основные
