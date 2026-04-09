@@ -430,7 +430,7 @@ _secret_set_field() {
       # Меняем нужное поле
       case "$field" in
         id) id="$value" ;; secret) secret="$value" ;; type) type="$value" ;;
-        domain) domain="$value" ;; created) created="$value" ;; expires="$value" ;;
+        domain) domain="$value" ;; created) created="$value" ;; expires) expires="$value" ;;
         status) status="$value" ;; comment) comment="$value" ;;
       esac
     fi
