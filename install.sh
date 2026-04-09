@@ -389,9 +389,8 @@ fi
 #   редактировать локально → git push → git pull на сервере
 # ─────────────────────────────────────────────────────────────────────────────
 if command -v git &>/dev/null && git -C "${SCRIPT_DIR}" rev-parse --git-dir &>/dev/null; then
-  local current_mode
-  current_mode=$(git -C "${SCRIPT_DIR}" config core.fileMode 2>/dev/null || echo "true")
-  if [[ "$current_mode" != "false" ]]; then
+  _current_mode=$(git -C "${SCRIPT_DIR}" config core.fileMode 2>/dev/null || echo "true")
+  if [[ "$_current_mode" != "false" ]]; then
     git -C "${SCRIPT_DIR}" config core.fileMode false
     log_info "git core.fileMode=false (игнорирование изменений прав)"
   fi
