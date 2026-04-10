@@ -463,3 +463,65 @@ secret_get_all_active() {
   _secrets_check || return 1
   active_secrets | cut -d',' -f2
 }
+
+# =============================================================================
+# v2: Domain-based secret helpers
+# =============================================================================
+
+# ── secrets_add_raw — добавить запись в CSV напрямую ─────────────────────────
+# secrets_add_raw <id> <secret> <type> <domain> <created> <status> <comment>
+# Используется domain.sh при создании домена.
+# ─────────────────────────────────────────────────────────────────────────────
+secrets_add_raw() {
+  _secrets_check || return 1
+  local id="$1" secret="$2" type="$3" domain="$4" created="$5" status="$6" comment="$7"
+  local expires="${8:-}"
+
+  local tmp
+  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
+  cat "${SECRETS_FILE}" > "$tmp"
+  printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    "$id" "$secret" "$type" "$domain" "$created" "$expires" "$status" "$comment" >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${SECRETS_FILE}"
+}
+
+# ── secrets_count_for_domain — количество секретов для домена ────────────────
+secrets_count_for_domain() {
+  _secrets_check || return 0
+  local domain="$1"
+  tail -n +2 "${SECRETS_FILE}" | awk -F',' -v d="$domain" '$4==d' | wc -l
+}
+
+# ── secrets_active_for_domain — получить активный секрет для домена ──────────
+secrets_active_for_domain() {
+  _secrets_check || return 1
+  local domain="$1"
+  tail -n +2 "${SECRETS_FILE}" | awk -F',' -v d="$domain" '$4==d && $7=="active" {print $2; exit}'
+}
+
+# ── secrets_masked_for_domain — замаскированный секрет для домена ────────────
+secrets_masked_for_domain() {
+  _secrets_check || return 1
+  local domain="$1"
+  local secret
+  secret=$(secrets_active_for_domain "$domain")
+  if [[ -n "$secret" ]]; then
+    mask_secret "$secret"
+  else
+    echo "none"
+  fi
+}
+
+# ── secrets_remove_domain — удалить все секреты для домена ───────────────────
+secrets_remove_domain() {
+  _secrets_check || return 1
+  local domain="$1"
+
+  local tmp
+  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
+  head -1 "${SECRETS_FILE}" > "$tmp"
+  tail -n +2 "${SECRETS_FILE}" | awk -F',' -v d="$domain" '$4!=d' >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${SECRETS_FILE}"
+}

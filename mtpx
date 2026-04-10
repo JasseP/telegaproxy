@@ -1,42 +1,22 @@
 #!/usr/bin/env bash
 ###############################################################################
-# mtpx — CLI-утилита для управления MTProto Proxy
+# mtpx — CLI-утилита для управления MTProto Proxy (v2: multi-proxy)
 #
-# Главный entrypoint — точка входа для всех пользовательских команд.
-# Этот файл НЕ содержит бизнес-логики; он только:
-#   1. Определяет корень проекта (MTPX_ROOT)
-#   2. Загружает все библиотечные модули из lib/
-#   3. Парсит аргументы командной строки
-#   4. Делегирует выполнение функциям из модулей
+# Архитектура: каждый домен = отдельный контейнер со своим секретом.
+# Пользователи получают разные ссылки для разных доменов.
 #
-# Все модули загружаются через source, что делает их функции доступными
-# в текущем shell-процессе (в отличие от subprocess).
-#
-# Использование:
-#   ./mtpx <command> [subcommand] [args...]
-#   mtpx help  — полный список команд
+#   ya.ru       → mtproto-ya-ru       → SECRET=ee79612e7275...
+#   google.com  → mtproto-google-com  → SECRET=ee676f6f676c...
+#   cloud.com   → mtproto-cloud-com   → SECRET=ee636c6f7564...
 ###############################################################################
 set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Определение корня проекта
-# ─────────────────────────────────────────────────────────────────────────────
-# BASH_SOURCE[0] — путь к этому файлу (mtpx).
-# dirname — директория, в которой он лежит.
-# cd + pwd — абсолютный путь (resolve relative paths, symlinks).
-# Экспортируем, чтобы все модули видели MTPX_ROOT.
+# Определяем корень проекта и загружаем модули
 # ─────────────────────────────────────────────────────────────────────────────
 MTPX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export MTPX_ROOT
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Загрузка модулей
-# ─────────────────────────────────────────────────────────────────────────────
-# Порядок важен: каждый модуль зависит от предыдущих (через source).
-# util.sh → config.sh → secret.sh → domain.sh → docker.sh → monitor.sh → status.sh
-#
-# shellcheck source=... — подсказка shellcheck для статического анализа.
-# ─────────────────────────────────────────────────────────────────────────────
 # shellcheck source=lib/util.sh
 source "${MTPX_ROOT}/lib/util.sh"
 # shellcheck source=lib/config.sh
@@ -53,47 +33,34 @@ source "${MTPX_ROOT}/lib/monitor.sh"
 source "${MTPX_ROOT}/lib/status.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# usage — справка по командам
-# ─────────────────────────────────────────────────────────────────────────────
-# heredoc с 'EOF' (в кавычках) предотвращает интерполяцию переменных —
-# все $ и ` трактуются буквально.
+# usage — справка
 # ─────────────────────────────────────────────────────────────────────────────
 usage() {
   cat <<'EOF'
-mtpx — управление MTProto Proxy
+mtpx v2 — управление MTProto Proxy (multi-proxy)
 
 Использование:
   mtpx <command> [subcommand] [args...]
 
 Команды:
   init                          Инициализация проекта
-  apply [port]                  Применить конфигурацию и запустить прокси
-  status                        Сводка состояния прокси
-  doctor                        Диагностика зависимостей и состояния
-  inspect                       Детальная информация о контейнере
+  apply [domain]                Запустить все домены (или один конкретный)
+  status                        Сводка состояния
+  doctor                        Диагностика
+  inspect [domain]              Детали контейнера (все или конкретный)
 
-  domain current                Показать текущий домен
-  domain list                   Список всех доменов
-  domain add <domain>           Добавить домен
-  domain set <domain>           Установить текущий домен
-  domain remove <domain>        Удалить домен
-  domain rotate                 Ротировать домен (следующий в списке)
-  domain auto enable [interval] Включить авто-ротацию (интервал в секундах)
-  domain auto disable           Выключить авто-ротацию
-  domain auto status            Статус авто-ротации
-  domain auto tick              Проверить и выполнить авто-ротацию
+  domain add <domain>           Создать домен + контейнер + секрет
+  domain remove <domain>        Удалить домен + контейнер + секреты
+  domain list                   Все домены с их статусом
+  domain link <domain>          Ссылка tg:// для конкретного домена
+  domain links                  Все ссылки для всех доменов
+  domain restart <domain>       Перезапустить контейнер домена
+  domain stop <domain>          Остановить контейнер домена
+  domain start <domain>         Запустить контейнер домена
+  domain logs <domain> [n]      Логи контейнера домена
 
-  secret add [type] [domain]    Добавить секрет (fake_tls|simple|secure)
-  secret list [status]          Список секретов (active|revoked)
-  secret show [--reveal] <id>   Показать секрет (полный с --reveal)
-  secret revoke <id>            Отозвать секрет
-  secret rotate <id> [type]     Ротировать секрет
-  secret delete <id>            Удалить секрет
-  secret link [id] [server] [port]  Показать ссылку tg://
-
-  logs [n]                      Последние n строк логов
-  restart                       Перезапустить контейнер
-  stop                          Остановить контейнер
+  stop                          Остановить все прокси
+  restart                       Перезапустить все прокси
 
   monitor                       Эвристический мониторинг
   version                       Версия mtpx
@@ -101,41 +68,34 @@ mtpx — управление MTProto Proxy
 
 Примеры:
   mtpx init
-  mtpx secret add fake_tls
+  mtpx domain add ya.ru
+  mtpx domain add google.com
   mtpx domain add cloudflare.com
   mtpx apply
-  mtpx status
-  mtpx secret link
+  mtpx domain list
+  mtpx domain links
+  mtpx domain remove google.com
 EOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# version — версия CLI
-# ─────────────────────────────────────────────────────────────────────────────
-# Семантическое версионирование: MAJOR.MINOR.PATCH
+# version
 # ─────────────────────────────────────────────────────────────────────────────
 version() {
-  echo "mtpx v1.0.0"
+  echo "mtpx v2.0.0 (multi-proxy)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# КОМАНДЫ — каждая вызывает функции из модулей
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── cmd_init — инициализация проекта ────────────────────────────────────────
-# Создаёт структуру директорий и файлы конфигурации.
-# Вызывает ensure_dirs, domains_init, runtime_init, secrets_init, auto_init.
-# В конце — подсказка по следующим шагам.
+# cmd_init — инициализация проекта
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_init() {
-  log_step "Инициализация mtpx..."
+  log_step "Инициализация mtpx v2..."
   echo ""
 
   ensure_dirs
   domains_init
   runtime_init
   secrets_init
-  auto_init
   chmod_sensitive
 
   echo ""
@@ -145,42 +105,38 @@ cmd_init() {
   echo "  ├── config/"
   echo "  │   └── domains.txt        — список доменов"
   echo "  ├── state/"
-  echo "  │   ├── secrets.csv        — секреты"
-  echo "  │   ├── runtime.env        — runtime параметры"
-  echo "  │   └── auto_tick.env      — авто-ротация"
+  echo "  │   ├── secrets.csv        — секреты (привязаны к домену)"
+  echo "  │   └── runtime.env        — runtime параметры"
   echo "  └── lib/                    — модули"
   echo ""
   echo "  Следующие шаги:"
-  echo "  1. mtpx secret add              — добавить секрет"
-  echo "  2. mtpx domain add <domain>     — добавить домен (опционально)"
-  echo "  3. mtpx apply                   — запустить прокси"
+  echo "  1. mtpx domain add ya.ru         — создать первый домен"
+  echo "  2. mtpx domain add google.com    — создать второй домен"
+  echo "  3. mtpx apply                    — запустить все домены"
+  echo "  4. mtpx domain links             — получить все ссылки"
 }
 
-# ── cmd_apply — применить конфигурацию ──────────────────────────────────────
-# Делегирует функции apply() из docker.sh.
-# Опциональный аргумент — порт (по умолчанию из runtime.env или 443).
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_apply — запустить все домены (или один конкретный)
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_apply() {
-  local port="${1:-}"
-  apply "$port"
+  local domain="${1:-}"
+  if [[ -n "$domain" ]]; then
+    apply_single "$domain"
+  else
+    apply_all
+  fi
 }
 
-# ── cmd_status — сводка состояния ───────────────────────────────────────────
-# Делегирует status_full() из status.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_status — сводка состояния
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_status() {
   status_full
 }
 
-# ── cmd_doctor — диагностика ────────────────────────────────────────────────
-# Комплексная проверка:
-#   1. Зависимости (docker, openssl, xxd, curl) — все ли установлены
-#   2. Структура файлов — существуют ли config/, state/, secrets.csv, ...
-#   3. Docker — статус контейнера
-#   4. Права файлов — должны быть 600 для чувствительных
-#   5. Здоровье — через monitor_health
-#
-# Считаем количество проблем и выводим итог.
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_doctor — диагностика
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_doctor() {
   echo ""
@@ -190,13 +146,12 @@ cmd_doctor() {
 
   local issues=0
 
-  # ── Зависимости ──────────────────────────────────────────────────────────
+  # Зависимости
   echo "║"
   echo "║  Зависимости:"
   local cmds=(docker openssl xxd curl)
   for cmd in "${cmds[@]}"; do
     if command -v "$cmd" &>/dev/null; then
-      # Пытаемся извлечь версию для информативности
       local ver=""
       case "$cmd" in
         docker) ver=$(docker --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) ;;
@@ -209,7 +164,7 @@ cmd_doctor() {
     fi
   done
 
-  # ── Структура файлов ─────────────────────────────────────────────────────
+  # Структура
   echo "║"
   echo "║  Структура:"
   for f in "${DOMAINS_FILE}" "${SECRETS_FILE}" "${RUNTIME_FILE}"; do
@@ -221,34 +176,36 @@ cmd_doctor() {
     fi
   done
 
-  # ── Docker ───────────────────────────────────────────────────────────────
+  # Docker-контейнеры
   echo "║"
-  echo "║  Docker:"
+  echo "║  Контейнеры:"
   if command -v docker &>/dev/null; then
-    local cstatus
-    cstatus=$(container_status)
-    case "$cstatus" in
-      running)
-        echo "║    ✅ Контейнер запущен"
-        ;;
-      stopped)
-        echo "║    ⚠️  Контейнер остановлен"
-        ;;
-      none)
-        echo "║    ℹ️  Контейнер не создан"
-        ;;
-    esac
+    local running total
+    running=$(count_running_proxies 2>/dev/null || echo "0")
+    total=$(count_all_proxies 2>/dev/null || echo "0")
+    echo "║    Запущено:    ${running}"
+    echo "║    Всего:       ${total}"
   else
     echo "║    ❌ Docker не доступен"
     issues=$(( issues + 1 ))
   fi
 
-  # ── Права файлов ─────────────────────────────────────────────────────────
+  # Домены
+  echo "║"
+  echo "║  Домены:"
+  if [[ -f "${DOMAINS_FILE}" ]]; then
+    local domain_count
+    domain_count=$(domain_list_raw 2>/dev/null | wc -l)
+    echo "║    В списке:    ${domain_count}"
+  else
+    echo "║    ℹ️  Не инициализированы"
+  fi
+
+  # Права файлов
   echo "║"
   echo "║  Права файлов:"
-  for f in "${SECRETS_FILE}" "${RUNTIME_FILE}" "${AUTO_TICK_FILE}"; do
+  for f in "${SECRETS_FILE}" "${RUNTIME_FILE}"; do
     if [[ -f "$f" ]]; then
-      # stat -c '%a' — Linux, stat -f '%Lp' — macOS
       local perms
       perms=$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || echo "?")
       if [[ "$perms" == "600" ]]; then
@@ -259,18 +216,7 @@ cmd_doctor() {
     fi
   done
 
-  # ── Здоровье (эвристики) ─────────────────────────────────────────────────
-  echo "║"
-  echo "║  Здоровье:"
-  local health
-  health=$(monitor_health 2>/dev/null || echo "unknown")
-  case "$health" in
-    healthy)  echo "║    ✅ Система в норме" ;;
-    degraded) echo "║    ⚠️  Система деградирована" ; issues=$(( issues + 1 )) ;;
-    *)        echo "║    ❓ Не удалось определить" ;;
-  esac
-
-  # ── Итог ─────────────────────────────────────────────────────────────────
+  # Итог
   echo "║"
   if (( issues == 0 )); then
     echo "║  Итог: ✅ Проблем не найдено"
@@ -280,221 +226,165 @@ cmd_doctor() {
   echo "╚═════════════════════════════════════════════╝"
 }
 
-# ── cmd_inspect — детальная информация о контейнере ─────────────────────────
-# Выводит:
-#   • Имя, состояние, время запуска, образ
-#   • Маппинг портов
-#   • Переменные окружения (секрет замаскирован)
-#   • Последние 3 строки логов
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_inspect — детальная информация о контейнере
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_inspect() {
+  local domain="${1:-}"
+
+  if [[ -n "$domain" ]]; then
+    _inspect_single "$domain"
+  else
+    _inspect_all
+  fi
+}
+
+_inspect_single() {
+  local domain="$1"
+  local cname
+  cname=$(container_name_for_domain "$domain")
+
   echo ""
   echo "╔═════════════════════════════════════════════╗"
-  echo "║         mtpx inspect                        ║"
+  echo "║  mtpx inspect: ${domain}"
   echo "╠═════════════════════════════════════════════╣"
 
-  if ! container_exists; then
+  if ! docker_container_exists "$cname"; then
     echo "║  Контейнер не создан"
     echo "╚═════════════════════════════════════════════╝"
     return 0
   fi
 
-  # docker inspect — полный JSON-описатель контейнера
-  # Извлекаем ключевые поля через grep -oP (Perl regex)
-  local info
-  info=$(docker inspect "${CONTAINER_NAME}" 2>/dev/null || echo "{}")
+  _inspect_container "$cname" "$domain"
+}
 
-  local state started image
+_inspect_all() {
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    echo "  Нет доменов"
+    return 0
+  fi
+
+  local first=true
+  while IFS= read -r domain || [[ -n "$domain" ]]; do
+    domain=$(printf '%s' "$domain" | tr -d '\r')
+    [[ -z "$domain" ]] && continue
+    [[ "$domain" == "domain" ]] && continue
+
+    if $first; then first=false; else echo ""; fi
+    _inspect_single "$domain"
+  done < "${DOMAINS_FILE}"
+}
+
+_inspect_container() {
+  local cname="$1" domain="$2"
+
+  local info state started image
+  info=$(docker inspect "$cname" 2>/dev/null || echo "{}")
   state=$(echo "$info" | grep -oP '"Status":\s*"\K[^"]+' | head -1 || echo "unknown")
   started=$(echo "$info" | grep -oP '"StartedAt":\s*"\K[^"]+' | head -1 || echo "unknown")
   image=$(echo "$info" | grep -oP '"Image":\s*"\K[^"]+' | head -1 || echo "unknown")
 
-  echo "║  Имя:          ${CONTAINER_NAME}"
-  echo "║  Состояние:    ${state}"
-  echo "║  Запущен:      ${started}"
-  echo "║  Образ:        ${image}"
+  echo "║  Контейнер:     ${cname}"
+  echo "║  Состояние:     ${state}"
+  echo "║  Запущен:       ${started}"
+  echo "║  Образ:         ${image}"
 
   # Порты
-  echo "║"
-  echo "║  Порты:"
-  if container_running; then
-    local port_info
-    port_info=$(docker port "${CONTAINER_NAME}" 2>/dev/null || echo "")
-    if [[ -n "$port_info" ]]; then
-      echo "$port_info" | while IFS= read -r line; do
-        printf "║    %s\n" "$line"
-      done
-    else
-      echo "║    нет маппинга"
-    fi
-  else
-    echo "║    контейнер не запущен"
-  fi
+  local port
+  port=$(docker_container_port "$cname" || echo "-")
+  echo "║  Порт:          ${port}"
 
-  # Переменные окружения (секрет маскируем!)
-  echo "║"
-  echo "║  Переменные окружения:"
-  local env_vars
-  env_vars=$(echo "$info" | grep -oP '"SECRET=\K[^"]+' || echo "")
-  if [[ -n "$env_vars" ]]; then
-    printf "║    SECRET=%s\n" "$(mask_secret "$env_vars")"
-  fi
+  # Секрет
+  local masked
+  masked=$(secrets_masked_for_domain "$domain" || echo "-")
+  echo "║  Secret:        ${masked}"
 
   # Логи
-  echo "║"
   echo "║  Последние логи:"
   local logs
-  logs=$(docker logs --tail 3 "${CONTAINER_NAME}" 2>&1 || echo "нет логов")
+  logs=$(docker logs --tail 3 "$cname" 2>&1 || echo "нет логов")
   echo "$logs" | while IFS= read -r line; do
-    # Обрезаем длинные строки для читаемости
-    printf "║    %s\n" "${line:0:60}"
+    printf "║    %s\n" "${line:0:55}"
   done
 
   echo "╚═════════════════════════════════════════════╝"
 }
 
-# ── cmd_domain — диспетчер подкоманд domain ─────────────────────────────────
-# Перенаправляет на соответствующие функции из config.sh и domain.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_domain — диспетчер подкоманд domain
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_domain() {
   local sub="${1:-}"
   shift || true
 
   case "$sub" in
-    current)
-      domain_current
-      echo ""
-      ;;
-    list|ls)
-      domain_list
-      ;;
     add)
       [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain add <domain>"; return 1; }
-      domain_add "$1"
-      ;;
-    set)
-      [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain set <domain>"; return 1; }
-      domain_set "$1"
+      add_domain_to_list "$1"
+      domain_add "$@"
       ;;
     remove|rm)
       [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain remove <domain>"; return 1; }
       domain_remove "$1"
+      remove_domain_from_list "$1"
       ;;
-    rotate)
-      domain_rotate
+    list|ls)
+      domain_list
       ;;
-    auto)
-      cmd_domain_auto "$@"
+    link)
+      [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain link <domain>"; return 1; }
+      domain_link "$@"
+      ;;
+    links)
+      domain_links "$@"
+      ;;
+    restart)
+      [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain restart <domain>"; return 1; }
+      domain_restart "$1"
+      ;;
+    stop)
+      [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain stop <domain>"; return 1; }
+      domain_stop "$1"
+      ;;
+    start)
+      [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain start <domain>"; return 1; }
+      domain_start "$1"
+      ;;
+    logs)
+      [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain logs <domain>"; return 1; }
+      domain_logs "$@"
       ;;
     *)
       log_error "Неизвестная подкоманда: domain $sub"
-      echo "  Доступные: current, list, add, set, remove, rotate, auto"
+      echo "  Доступные: add, remove, list, link, links, restart, stop, start, logs"
       return 1
       ;;
   esac
 }
 
-# ── cmd_domain_auto — диспетчер подкоманд domain auto ───────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
-cmd_domain_auto() {
-  local sub="${1:-}"
-  shift || true
-
-  case "$sub" in
-    enable)
-      local interval="${1:-3600}"
-      auto_enable "$interval"
-      ;;
-    disable)
-      auto_disable
-      ;;
-    status)
-      auto_status
-      ;;
-    tick)
-      auto_tick
-      ;;
-    *)
-      log_error "Неизвестная подкоманда: domain auto $sub"
-      echo "  Доступные: enable, disable, status, tick"
-      return 1
-      ;;
-  esac
-}
-
-# ── cmd_secret — диспетчер подкоманд secret ─────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-cmd_secret() {
-  local sub="${1:-}"
-  shift || true
-
-  case "$sub" in
-    add)
-      local type="${1:-fake_tls}"
-      local domain="${2:-}"
-      secret_add "$type" "$domain"
-      ;;
-    list|ls)
-      local filter="${1:-}"
-      secret_list "$filter"
-      ;;
-    show)
-      # secret_show принимает флаги (--reveal) и ID
-      secret_show "$@"
-      ;;
-    revoke)
-      [[ $# -gt 0 ]] || { log_error "Укажите ID: mtpx secret revoke <id>"; return 1; }
-      secret_revoke "$1"
-      ;;
-    rotate)
-      [[ $# -gt 0 ]] || { log_error "Укажите ID: mtpx secret rotate <id>"; return 1; }
-      secret_rotate "$@"
-      ;;
-    delete|rm)
-      [[ $# -gt 0 ]] || { log_error "Укажите ID: mtpx secret delete <id>"; return 1; }
-      secret_delete "$1"
-      ;;
-    link)
-      secret_link "$@"
-      ;;
-    *)
-      log_error "Неизвестная подкоманда: secret $sub"
-      echo "  Доступные: add, list, show, revoke, rotate, delete, link"
-      return 1
-      ;;
-  esac
-}
-
-# ── cmd_logs ────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-cmd_logs() {
-  local lines="${1:-20}"
-  container_logs "$lines"
-}
-
-# ── cmd_restart ─────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-cmd_restart() {
-  container_restart
-}
-
-# ── cmd_stop ────────────────────────────────────────────────────────────────
+# cmd_stop — остановить все прокси
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_stop() {
-  container_stop
+  stop_all
 }
 
-# ── cmd_monitor ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_restart — перезапустить все прокси
+# ─────────────────────────────────────────────────────────────────────────────
+cmd_restart() {
+  restart_all
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_monitor — эвристический мониторинг
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_monitor() {
   monitor_summary
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# main — диспетчер команд верхнего уровня
-# ─────────────────────────────────────────────────────────────────────────────
-# $1 — команда, остальные аргументы — параметры команды.
-# Если команда не распознана — выводим ошибку + справку.
+# main — диспетчер команд
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
   local cmd="${1:-help}"
@@ -507,10 +397,8 @@ main() {
     doctor)    cmd_doctor "$@" ;;
     inspect)   cmd_inspect "$@" ;;
     domain)    cmd_domain "$@" ;;
-    secret)    cmd_secret "$@" ;;
-    logs)      cmd_logs "$@" ;;
-    restart)   cmd_restart "$@" ;;
     stop)      cmd_stop "$@" ;;
+    restart)   cmd_restart "$@" ;;
     monitor)   cmd_monitor "$@" ;;
     version)   version ;;
     help|--help|-h)  usage ;;
@@ -523,5 +411,4 @@ main() {
   esac
 }
 
-# Точка входа — вызываем main со всеми аргументами
 main "$@"

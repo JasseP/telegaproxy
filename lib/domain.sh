@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
 ###############################################################################
-# lib/domain.sh — управление доменами: ротация, авто-ротация, tick
+# lib/domain.sh — управление доменами (каждый домен = отдельный контейнер)
 #
-# Зачем ротировать домены?
-#   Fake TLS маскирует трафик MTProxy под HTTPS-соединение с указанным
-#   доменом. Если домен «засветился» (провайдер/ DPI начал блокировать
-#   TLS-соединения с этим доменом), смена домена позволяет обойти блокировку.
+# Архитектура v2: Multi-Proxy
+#   Каждый домен — это отдельный Docker-контейнер со своим секретом.
+#   Пользователи получают разные ссылки для разных доменов.
 #
-# Авто-ротация:
-#   По таймеру (интервал в секундах) первый домен перемещается в конец
-#   списка, и следующий домен становится активным. Для применения нового
-#   домена нужен `mtpx apply` (перезапуск прокси с новым секретом).
+#   ya.ru       → mtproxy-ya-ru       → SECRET=ee79612e7275...
+#   google.com  → mtproxy-google-com  → SECRET=ee676f6f676c...
+#   cloud.com   → mtproxy-cloud-com   → SECRET=ee636c6f7564...
 #
-# Хранение настроек: state/auto_tick.env
-#   AUTO_ENABLED    — true/false
-#   AUTO_INTERVAL   — интервал в секундах (по умолчанию 3600 = 1 час)
-#   AUTO_LAST_ROTATE — epoch последнего срабатывания
-#   AUTO_NEXT_ROTATE — epoch следующего срабатывания
+# Контейнер именуется: mtproto-<normalized_domain>
+#   нормализация: точка и тире заменяются на дефис, транслитерация не нужна.
 ###############################################################################
 set -euo pipefail
 
@@ -26,300 +21,315 @@ source "${MTPX_ROOT}/lib/util.sh"
 source "${MTPX_ROOT}/lib/config.sh"
 # shellcheck source=lib/secret.sh
 source "${MTPX_ROOT}/lib/secret.sh"
+# shellcheck source=lib/docker.sh
+source "${MTPX_ROOT}/lib/docker.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Auto tick — конфигурация
+# Утилиты
 # ─────────────────────────────────────────────────────────────────────────────
-AUTO_TICK_FILE="${STATE_DIR}/auto_tick.env"
 
-# ── auto_init — инициализация файла авто-ротации ─────────────────────────────
-# Создаём auto_tick.env с настройками по умолчанию.
-# AUTO_ENABLED=false — авто-ротация выключена до явного включения.
+# ── normalize_domain — преобразовать домен в имя контейнера ──────────────────
+# ya.ru → ya-ru
+# cloudflare.com → cloudflare-com
+# sub.domain.com → sub-domain-com
 # ─────────────────────────────────────────────────────────────────────────────
-auto_init() {
-  if [[ ! -f "${AUTO_TICK_FILE}" ]]; then
-    cat > "${AUTO_TICK_FILE}" <<EOF
-AUTO_ENABLED=false
-AUTO_INTERVAL=3600
-AUTO_LAST_ROTATE=0
-AUTO_NEXT_ROTATE=0
-EOF
-    chmod 600 "${AUTO_TICK_FILE}"
-    log_info "Создан ${AUTO_TICK_FILE}"
-  fi
+normalize_domain() {
+  printf '%s' "$1" | tr '.' '-' | tr '_' '-' | tr '[:upper:]' '[:lower:]'
 }
 
-# ── auto_get / auto_set — чтение/запись настроек авто-ротации ────────────────
-# Обёртки над env_get / env_set из util.sh.
-# ─────────────────────────────────────────────────────────────────────────────
-auto_get() {
-  env_get "${AUTO_TICK_FILE}" "$1"
-}
-
-auto_set() {
-  env_set "${AUTO_TICK_FILE}" "$1" "$2"
+# ── container_name_for_domain — полное имя контейнера ────────────────────────
+container_name_for_domain() {
+  local norm
+  norm=$(normalize_domain "$1")
+  printf 'mtproto-%s' "$norm"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# auto_enable — включить автоматическую ротацию
+# domain_add — создать домен + контейнер + секрет
 # ─────────────────────────────────────────────────────────────────────────────
-# auto_enable [interval]
+# domain_add <domain> [port]
 #
-# interval — период ротации в секундах (по умолчанию 3600 = 1 час).
-# Рассчитываем AUTO_NEXT_ROTATE = now + interval.
-# После включения auto_tick начнёт ротировать домен при каждом вызове,
-# если текущее время >= AUTO_NEXT_ROTATE.
+# Что делает:
+#   1. Проверяет валидность домена
+#   2. Проверяет, нет ли уже такого контейнера
+#   3. Генерирует Fake TLS секрет для домена
+#   4. Сохраняет секрет в secrets.csv
+#   5. Запускает Docker-контейнер
+#   6. Выводит ссылку для подключения
 # ─────────────────────────────────────────────────────────────────────────────
-auto_enable() {
-  local interval="${1:-3600}"
+domain_add() {
+  local domain="$1"
+  local port="${2:-}"
 
-  auto_init
+  # Валидация
+  validate_domain "$domain"
 
-  local now
-  now=$(date +%s)
-  auto_set "AUTO_ENABLED" "true"
-  auto_set "AUTO_INTERVAL" "$interval"
-  auto_set "AUTO_LAST_ROTATE" "$now"
-  auto_set "AUTO_NEXT_ROTATE" "$(( now + interval ))"
-
-  log_info "Автоматическая ротация включена (интервал: ${interval}с)"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# auto_disable — выключить автоматическую ротацию
-# ─────────────────────────────────────────────────────────────────────────────
-# Просто ставим AUTO_ENABLED=false. Таймеры сохраняются — при повторном
-# включении можно продолжить с того же места.
-# ─────────────────────────────────────────────────────────────────────────────
-auto_disable() {
-  auto_init
-  auto_set "AUTO_ENABLED" "false"
-  log_info "Автоматическая ротация выключена"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# auto_should_rotate — проверить, пора ли ротировать
-# ─────────────────────────────────────────────────────────────────────────────
-# Возвращает 0 (true), если:
-#   • AUTO_ENABLED == true
-#   • Текущее время >= AUTO_NEXT_ROTATE
-# Иначе — 1 (false).
-# ─────────────────────────────────────────────────────────────────────────────
-auto_should_rotate() {
-  auto_init
-  local enabled
-  enabled=$(auto_get "AUTO_ENABLED")
-  if [[ "$enabled" != "true" ]]; then
-    return 1  # Авто-ротация выключена
+  # Проверяем, не существует ли уже такой контейнер
+  local cname
+  cname=$(container_name_for_domain "$domain")
+  if docker_container_exists "$cname"; then
+    log_warn "Домен '${domain}' уже запущен (контейнер: ${cname})"
+    echo "  Ссылка: mtpx domain link ${domain}"
+    return 0
   fi
 
-  local now next
-  now=$(date +%s)
-  next=$(auto_get "AUTO_NEXT_ROTATE")
-  next="${next:-0}"
+  # Генерируем секрет
+  log_step "Генерация секрета для '${domain}'..."
+  local secret
+  secret=$(generate_fake_tls_secret "$domain")
 
-  if (( now >= next )); then
-    return 0  # Пора ротировать
+  # Сохраняем в CSV
+  local id created_at
+  id=$(_secret_id)
+  created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  secrets_add_raw "$id" "$secret" "fake_tls" "$domain" "$created_at" "active" "auto-created by domain add"
+
+  # Запускаем контейнер
+  log_step "Запуск контейнера ${cname}..."
+  if docker_start_for_domain "$domain" "$cname" "$secret" "$port"; then
+    log_info "Домен '${domain}' запущен"
+    echo ""
+    echo "  Ссылка: mtpx domain link ${domain}"
   else
-    return 1  # Ещё рано
+    log_error "Не удалось запустить контейнер для '${domain}'"
+    # Отзываем секрет, т.к. контейнер не запустился
+    _secret_set_field "$id" "status" "revoked"
+    return 1
   fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# auto_tick — проверить и выполнить авто-ротацию
+# domain_remove — удалить домен + контейнер + секреты
 # ─────────────────────────────────────────────────────────────────────────────
-# Вызывается периодически (например, из cron или systemd timer).
+# domain_remove <domain>
 #
-# Если ещё не пора — выводит время до следующей ротации.
-# Если пора:
-#   1. Перемещает первый домен в конец списка
-#   2. Обновляет таймер (LAST_ROTATE = now, NEXT_ROTATE = now + interval)
-#   3. Напоминает, что нужен `mtpx apply` для применения
-#
-# Важно: tick НЕ перезапускает прокси автоматически. Это сделано намеренно —
-# пользователь сам решает, когда применить изменения.
+# Что делает:
+#   1. Находит контейнер для домена
+#   2. Останавливает и удаляет его
+#   3. Отзывает все секреты для этого домена
+#   4. Удаляет секреты из CSV
 # ─────────────────────────────────────────────────────────────────────────────
-auto_tick() {
-  # Если ещё не пора — выводим информацию и выходим
-  if ! auto_should_rotate; then
-    local next
-    next=$(auto_get "AUTO_NEXT_ROTATE")
-    if [[ -n "$next" ]] && (( next > 0 )); then
-      local remaining=$(( next - $(date +%s) ))
-      if (( remaining > 0 )); then
-        echo "  Авто-ротация: следующее выполнение через ${remaining}с"
-      else
-        echo "  Авто-ротация: ожидает активации"
-      fi
-    else
-      echo "  Авто-ротация: не настроена"
-    fi
-    return 0
+domain_remove() {
+  local domain="$1"
+
+  validate_domain "$domain"
+
+  local cname
+  cname=$(container_name_for_domain "$domain")
+
+  if ! docker_container_exists "$cname"; then
+    log_warn "Контейнер для домена '${domain}' не найден"
+  else
+    log_step "Остановка контейнера ${cname}..."
+    docker_stop_container "$cname"
+    docker_remove_container "$cname"
+    log_info "Контейнер ${cname} удалён"
   fi
 
-  log_step "⏰ Авто-ротация домена..."
-
-  local current
-  current=$(domain_current)
-  log_info "Текущий домен: ${current}"
-
-  # Проверяем, достаточно ли доменов для ротации
-  local domains
-  domains=$(domain_list)
-  local total
-  total=$(echo "$domains" | wc -l)
-
-  if (( total < 2 )); then
-    log_warn "Только один домен в списке. Добавьте ещё: mtpx domain add <domain>"
-    # Обновляем таймер, чтобы не спамить ротацией
-    local now interval
-    now=$(date +%s)
-    interval=$(auto_get "AUTO_INTERVAL")
-    auto_set "AUTO_LAST_ROTATE" "$now"
-    auto_set "AUTO_NEXT_ROTATE" "$(( now + interval ))"
-    return 0
+  # Удаляем все секреты для этого домена
+  local count
+  count=$(secrets_count_for_domain "$domain")
+  if (( count > 0 )); then
+    secrets_remove_domain "$domain"
+    log_info "Удалено секретов: ${count}"
   fi
 
-  # Перемещаем первый домен в конец списка
-  local tmp
-  tmp="$(mktemp "${DOMAINS_FILE}.tmp.XXXXXX")"
-  tail -n +2 "${DOMAINS_FILE}" > "$tmp"  # Все, кроме первого
-  head -1 "${DOMAINS_FILE}" >> "$tmp"    # Первый — в конец
-  mv -f "$tmp" "${DOMAINS_FILE}"
-
-  local new_domain
-  new_domain=$(domain_current)
-  log_info "Новый домен: ${new_domain}"
-
-  # Обновляем таймер
-  local now interval
-  now=$(date +%s)
-  interval=$(auto_get "AUTO_INTERVAL")
-  auto_set "AUTO_LAST_ROTATE" "$now"
-  auto_set "AUTO_NEXT_ROTATE" "$(( now + interval ))"
-
-  log_info "Домен ротирован: ${current} → ${new_domain}"
-
-  # Проверяем совместимость секретов и предупреждаем
-  _check_secret_compatibility "$current" "$new_domain"
-
-  echo "  Не забудьте: mtpx apply  (для перезапуска прокси с новым доменом)"
+  log_info "Домен '${domain}' полностью удалён"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# domain_rotate — ручная ротация домена
+# domain_list — список всех доменов с их статусом
 # ─────────────────────────────────────────────────────────────────────────────
-# Перемещает первый домен в конец списка.
-# Требует минимум 2 домена в списке (иначе ротация бессмысленна).
+# Выводит таблицу: домен, контейнер, статус, порт, секрет(маскированный), ссылка
 # ─────────────────────────────────────────────────────────────────────────────
-domain_rotate() {
-  local current
-  current=$(domain_current)
-  local domains
-  domains=$(domain_list)
-  local total
-  total=$(echo "$domains" | wc -l)
+domain_list() {
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    echo "  Нет доменов. Добавьте: mtpx domain add <domain>"
+    return 0
+  fi
 
-  if (( total < 2 )); then
-    log_error "Нужно минимум 2 домена для ротации. Сейчас: ${total}"
-    log_info "Добавьте домен: mtpx domain add <domain>"
+  echo "┌──────────────────┬──────────────────────┬──────────┬──────┬───────────────────────────────┐"
+  echo "│ Домен            │ Контейнер            │ Статус   │ Порт │ Secret                        │"
+  echo "├──────────────────┼──────────────────────┼──────────┼──────┼───────────────────────────────┤"
+
+  local first=true
+  while IFS= read -r domain || [[ -n "$domain" ]]; do
+    domain=$(printf '%s' "$domain" | tr -d '\r')
+    [[ -z "$domain" ]] && continue
+
+    if $first; then first=false; continue; fi  # пропуск заголовка CSV (если вдруг)
+
+    local cname cstatus port masked_secret
+    cname=$(container_name_for_domain "$domain")
+    cstatus=$(docker_container_status "$cname")
+    port=$(docker_container_port "$cname" || echo "-")
+    masked_secret=$(secrets_masked_for_domain "$domain" || echo "-")
+
+    printf "│ %-16s │ %-20s │ %-8s │ %-4s │ %-29s │\n" \
+      "$domain" "$cname" "$cstatus" "$port" "$masked_secret"
+  done < "${DOMAINS_FILE}"
+
+  echo "└──────────────────┴──────────────────────┴──────────┴──────┴───────────────────────────────┘"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# domain_link — получить ссылку для конкретного домена
+# ─────────────────────────────────────────────────────────────────────────────
+# domain_link <domain> [server]
+# ─────────────────────────────────────────────────────────────────────────────
+domain_link() {
+  local domain="$1"
+  local server="${2:-}"
+
+  validate_domain "$domain"
+
+  # Получаем активный секрет для домена
+  local secret
+  secret=$(secrets_active_for_domain "$domain")
+  if [[ -z "$secret" ]]; then
+    log_error "Нет активных секретов для домена '${domain}'"
     return 1
   fi
 
-  # Атомарно перемещаем первый домен в конец
-  local tmp
-  tmp="$(mktemp "${DOMAINS_FILE}.tmp.XXXXXX")"
-  tail -n +2 "${DOMAINS_FILE}" > "$tmp"  # Со второго до конца
-  head -1 "${DOMAINS_FILE}" >> "$tmp"    # Первый — в конец
-  mv -f "$tmp" "${DOMAINS_FILE}"
+  # Порт из контейнера
+  local cname port
+  cname=$(container_name_for_domain "$domain")
+  port=$(docker_container_port "$cname" || echo "$DEFAULT_PORT")
 
-  local new_domain
-  new_domain=$(domain_current)
-  log_info "Домен ротирован: ${current} → ${new_domain}"
+  if [[ -z "$server" ]]; then
+    server=$(get_server_ip)
+  fi
 
-  # Проверяем совместимость секретов и предупреждаем
-  _check_secret_compatibility "$current" "$new_domain"
+  printf 'tg://proxy?server=%s&port=%s&secret=%s\n' "$server" "$port" "$secret"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _check_secret_compatibility — проверка совместимости секретов при ротации
+# domain_links — все ссылки для всех доменов
 # ─────────────────────────────────────────────────────────────────────────────
-# Fake TLS секреты содержат hex домена внутри себя (ee + hex(domain) + random).
-# После смены домена они становятся несовместимы:
-#   • Клиент думает, что подключается к ya.ru
-#   • Прокси маскируется под google.com
-#   • TLS handshake может провалиться
-#
-# Решение: НЕ менять секреты автоматически (это потребовало бы перераспределения
-# всем пользователям), а предупредить и предложить варианты.
-# ─────────────────────────────────────────────────────────────────────────────
-_check_secret_compatibility() {
-  local old_domain="$1"
-  local new_domain="$2"
+domain_links() {
+  local server="${1:-}"
+  if [[ -z "$server" ]]; then
+    server=$(get_server_ip)
+  fi
 
-  if [[ ! -f "${SECRETS_FILE}" ]]; then
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    log_error "Нет доменов"
+    return 1
+  fi
+
+  while IFS= read -r domain || [[ -n "$domain" ]]; do
+    domain=$(printf '%s' "$domain" | tr -d '\r')
+    [[ -z "$domain" ]] && continue
+    [[ "$domain" == "domain" ]] && continue  # заголовок CSV
+
+    local secret
+    secret=$(secrets_active_for_domain "$domain")
+    [[ -z "$secret" ]] && continue
+
+    local cname port
+    cname=$(container_name_for_domain "$domain")
+    port=$(docker_container_port "$cname" || echo "$DEFAULT_PORT")
+
+    echo "  ${domain}:"
+    printf '    tg://proxy?server=%s&port=%s&secret=%s\n' "$server" "$port" "$secret"
+    echo ""
+  done < "${DOMAINS_FILE}"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# domain_restart / domain_stop / domain_start / domain_logs — операции на домен
+# ─────────────────────────────────────────────────────────────────────────────
+domain_restart() {
+  local domain="$1"
+  local cname
+  cname=$(container_name_for_domain "$domain")
+  docker_restart_container "$cname"
+}
+
+domain_stop() {
+  local domain="$1"
+  local cname
+  cname=$(container_name_for_domain "$domain")
+  docker_stop_container "$cname"
+}
+
+domain_start() {
+  local domain="$1"
+  local cname
+  cname=$(container_name_for_domain "$domain")
+  local secret
+  secret=$(secrets_active_for_domain "$domain")
+  if [[ -z "$secret" ]]; then
+    log_error "Нет секрета для домена '${domain}'"
+    return 1
+  fi
+  docker_start_for_domain "$domain" "$cname" "$secret"
+}
+
+domain_logs() {
+  local domain="$1"
+  local lines="${2:-20}"
+  local cname
+  cname=$(container_name_for_domain "$domain")
+  docker_container_logs "$cname" "$lines"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# domains_init — инициализация файла доменов
+# ─────────────────────────────────────────────────────────────────────────────
+domains_init() {
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    atomic_write "${DOMAINS_FILE}" "domain"
+    log_info "Создан ${DOMAINS_FILE}"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# domain_list_raw — вывести все домены (без заголовка, без пустых строк)
+# ─────────────────────────────────────────────────────────────────────────────
+domain_list_raw() {
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    return 0
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=$(printf '%s' "$line" | tr -d '\r')
+    [[ -z "$line" ]] && continue
+    [[ "$line" == "domain" ]] && continue
+    printf '%s\n' "$line"
+  done < "${DOMAINS_FILE}"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# add_domain_to_list — добавить домен в domains.txt (атомарно)
+# ─────────────────────────────────────────────────────────────────────────────
+add_domain_to_list() {
+  local domain="$1"
+
+  # Проверка дубликата
+  if [[ -f "${DOMAINS_FILE}" ]] && grep -qxF "$domain" "${DOMAINS_FILE}" 2>/dev/null; then
+    return 0  # уже есть
+  fi
+
+  local tmp
+  tmp="$(mktemp "${DOMAINS_FILE}.tmp.XXXXXX")"
+  if [[ -f "${DOMAINS_FILE}" ]]; then
+    cat "${DOMAINS_FILE}" > "$tmp"
+  fi
+  printf '%s\n' "$domain" >> "$tmp"
+  mv -f "$tmp" "${DOMAINS_FILE}"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# remove_domain_from_list — удалить домен из domains.txt
+# ─────────────────────────────────────────────────────────────────────────────
+remove_domain_from_list() {
+  local domain="$1"
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
     return 0
   fi
 
-  # Считаем активные fake_tls-секреты для старого домена
-  local incompatible_count=0
-  local first=true
-  while IFS=',' read -r id secret type domain created expires status comment; do
-    if $first; then first=false; continue; fi
-    if [[ "$type" == "fake_tls" && "$domain" == "$old_domain" && "$status" == "active" ]]; then
-      incompatible_count=$(( incompatible_count + 1 ))
-    fi
-  done < "${SECRETS_FILE}"
-
-  if (( incompatible_count > 0 )); then
-    echo ""
-    echo "  ⚠️  Внимание: ${incompatible_count} Fake TLS секрет(ов) несовместимы с новым доменом"
-    echo "     (секрет содержит hex '${old_domain}', новый домен — '${new_domain}')"
-    echo ""
-    echo "  Варианты:"
-    echo "    1. mtpx secret add simple          — домен-независимый секрет (рекомендуется для ротации)"
-    echo "    2. mtpx secret add fake_tls        — новый секрет для '${new_domain}'"
-    echo "    3. Оставить как есть — старые секреты продолжат работать, но"
-    echo "       TLS-обфускация будет показывать '${old_domain}' вместо '${new_domain}'"
-    echo ""
-  fi
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# auto_status — статус авто-ротации
-# ─────────────────────────────────────────────────────────────────────────────
-# Выводит таблицу:
-#   • Включена / выключена
-#   • Интервал
-#   • Время до следующей ротации (или "готова к запуску")
-# ─────────────────────────────────────────────────────────────────────────────
-auto_status() {
-  auto_init
-  local enabled interval last next
-
-  enabled=$(auto_get "AUTO_ENABLED")
-  interval=$(auto_get "AUTO_INTERVAL")
-  last=$(auto_get "AUTO_LAST_ROTATE")
-  next=$(auto_get "AUTO_NEXT_ROTATE")
-
-  echo "┌─────────────────────────────────────────┐"
-  echo "│  Авто-ротация доменов                   │"
-  echo "├─────────────────────────────────────────┤"
-  if [[ "$enabled" == "true" ]]; then
-    echo "│  Статус:        ВКЛ                     │"
-    echo "│  Интервал:      ${interval}с"
-    if [[ -n "$next" ]] && (( next > 0 )); then
-      local remaining=$(( next - $(date +%s) ))
-      if (( remaining > 0 )); then
-        printf "│  Следующая:   через %-6dс            │\n" "$remaining"
-      else
-        echo "│  Следующая:   ГОТОВА К ЗАПУСКУ       │"
-      fi
-    else
-      echo "│  Следующая:     не назначена           │"
-    fi
-  else
-    echo "│  Статус:        ВЫКЛ                    │"
-  fi
-  echo "└─────────────────────────────────────────┘"
+  local tmp
+  tmp="$(mktemp "${DOMAINS_FILE}.tmp.XXXXXX")"
+  grep -vxF "$domain" "${DOMAINS_FILE}" > "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "${DOMAINS_FILE}"
 }

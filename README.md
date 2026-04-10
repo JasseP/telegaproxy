@@ -1,6 +1,16 @@
-# mtpx — CLI для управления MTProto Proxy
+# mtpx — CLI для управления MTProto Proxy (v2: multi-proxy)
 
-CLI-утилита для развёртывания и управления [MTProto Proxy](https://github.com/TelegramMessenger/MTProxy) с поддержкой Fake TLS, ротации доменов и эвристического мониторинга.
+CLI-утилита для развёртывания и управления [MTProto Proxy](https://github.com/TelegramMessenger/MTProxy) с поддержкой **нескольких доменов** — каждый домен = отдельный контейнер со своим секретом.
+
+## Архитектура
+
+```
+ya.ru       → mtproto-ya-ru       → SECRET=ee79612e7275...
+google.com  → mtproto-google-com  → SECRET=ee676f6f676c...
+cloud.com   → mtproto-cloud-com   → SECRET=ee636c6f7564...
+```
+
+Каждый пользователь получает свою ссылку для каждого домена и выбирает сам, через какой подключаться.
 
 ## Быстрый старт
 
@@ -11,9 +21,44 @@ CLI-утилита для развёртывания и управления [MT
 # Или вручную
 chmod +x mtpx
 ./mtpx init
-./mtpx secret add
+./mtpx domain add ya.ru
+./mtpx domain add google.com
 ./mtpx apply
 ```
+
+## Команды
+
+### Основные
+
+| Команда | Описание |
+|---------|----------|
+| `mtpx init` | Инициализация проекта |
+| `mtpx apply [domain]` | Запустить все домены (или один конкретный) |
+| `mtpx status` | Сводка состояния |
+| `mtpx doctor` | Диагностика зависимостей и состояния |
+| `mtpx inspect [domain]` | Детали контейнера (все или конкретный) |
+
+### Домены (каждый = контейнер)
+
+| Команда | Описание |
+|---------|----------|
+| `mtpx domain add <domain>` | Создать домен + контейнер + секрет |
+| `mtpx domain remove <domain>` | Удалить домен + контейнер + секреты |
+| `mtpx domain list` | Все домены с их статусом |
+| `mtpx domain link <domain>` | Ссылка tg:// для конкретного домена |
+| `mtpx domain links` | Все ссылки для всех доменов |
+| `mtpx domain restart <domain>` | Перезапустить контейнер домена |
+| `mtpx domain stop <domain>` | Остановить контейнер домена |
+| `mtpx domain start <domain>` | Запустить контейнер домена |
+| `mtpx domain logs <domain> [n]` | Логи контейнера домена |
+
+### Операции
+
+| Команда | Описание |
+|---------|----------|
+| `mtpx stop` | Остановить все прокси |
+| `mtpx restart` | Перезапустить все прокси |
+| `mtpx monitor` | Эвристический мониторинг |
 
 ## Обновление на сервере
 
@@ -25,55 +70,7 @@ git config core.fileMode false
 git pull
 ```
 
-## Команды
-
-### Основные
-
-| Команда | Описание |
-|---------|----------|
-| `mtpx init` | Инициализация проекта (создаёт config/ и state/) |
-| `mtpx apply [port]` | Применить конфигурацию и запустить прокси |
-| `mtpx status` | Сводка состояния |
-| `mtpx doctor` | Диагностика зависимостей и состояния |
-| `mtpx inspect` | Детальная информация о контейнере |
-
-### Домены
-
-| Команда | Описание |
-|---------|----------|
-| `mtpx domain current` | Текущий домен |
-| `mtpx domain list` | Все домены |
-| `mtpx domain add <domain>` | Добавить домен |
-| `mtpx domain set <domain>` | Установить текущий домен |
-| `mtpx domain remove <domain>` | Удалить домен |
-| `mtpx domain rotate` | Ротировать домен |
-| `mtpx domain auto enable [interval]` | Включить авто-ротацию |
-| `mtpx domain auto disable` | Выключить авто-ротацию |
-| `mtpx domain auto status` | Статус авто-ротации |
-| `mtpx domain auto tick` | Проверить/выполнить авто-ротацию |
-
-### Секреты
-
-| Команда | Описание |
-|---------|----------|
-| `mtpx secret add [type] [domain]` | Добавить секрет (fake_tls/simple/secure) |
-| `mtpx secret list [status]` | Список (active/revoked) |
-| `mtpx secret show [--reveal] <id>` | Показать секрет |
-| `mtpx secret revoke <id>` | Отозвать |
-| `mtpx secret rotate <id> [type]` | Ротировать |
-| `mtpx secret delete <id>` | Удалить |
-| `mtpx secret link [id] [server] [port]` | Ссылка tg:// |
-
-### Операции
-
-| Команда | Описание |
-|---------|----------|
-| `mtpx logs [n]` | Последние n строк логов |
-| `mtpx restart` | Перезапустить контейнер |
-| `mtpx stop` | Остановить контейнер |
-| `mtpx monitor` | Эвристический мониторинг |
-
-## Архитектура
+## Архитектура файлов
 
 ```
 telegaProxy/
@@ -81,17 +78,16 @@ telegaProxy/
 ├── start-mtproxy.sh        # Обратная совместимость (обёртка)
 ├── install.sh              # Установка
 ├── config/
-│   └── domains.txt         # Список доменов (текущий первый)
+│   └── domains.txt         — список доменов (один на строку)
 ├── state/
-│   ├── secrets.csv         # Секреты (CSV: id,secret,type,domain,...)
-│   ├── runtime.env         # Runtime параметры (PORT, LAST_APPLY)
-│   └── auto_tick.env       # Настройки авто-ротации
+│   ├── secrets.csv         — секреты (привязаны к домену)
+│   └── runtime.env         — runtime параметры
 └── lib/
-    ├── util.sh             # Утилиты (логирование, валидация, атомарная запись)
+    ├── util.sh             # Утилиты (логирование, валидация, atomic write)
     ├── config.sh           # Управление конфигами
-    ├── secret.sh           # Управление секретами
-    ├── domain.sh           # Управление доменами + auto tick
-    ├── docker.sh           # Docker-операции
+    ├── secret.sh           # Управление секретами + domain helpers
+    ├── domain.sh           # Домены (add/remove/list/link)
+    ├── docker.sh           # Docker-операции (per-domain containers)
     ├── monitor.sh          # Эвристический мониторинг
     └── status.sh           # Сводный статус
 ```
@@ -111,8 +107,9 @@ CSV: `id,secret,type,domain,created_at,expires_at,status,comment`
 
 - Файлы секретов: `chmod 600`
 - Атомарная запись через temp file + mv
-- Секреты не печатаются полностью без `--reveal`
+- Секреты не печатаются полностью без явного флага
 - `state/` содержит чувствительные данные
+- Git `core.fileMode=false` — защита от ложных конфликтов
 
 ## Обратная совместимость
 
@@ -123,7 +120,9 @@ CSV: `id,secret,type,domain,created_at,expires_at,status,comment`
 bash start-mtproxy.sh
 
 # Новый способ
-./mtpx init && ./mtpx secret add && ./mtpx apply
+./mtpx domain add ya.ru
+./mtpx domain add google.com
+./mtpx apply
 ```
 
 ## Зависимости
