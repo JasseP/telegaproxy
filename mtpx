@@ -71,6 +71,7 @@ mtpx v3 — MTProto Proxy (multi-user, multi-domain)
   user rotate <username>        Перегенерировать секреты
 
   migrate                       Миграция данных (v2→v3)
+  secrets clear                 Удалить все секреты (полная очистка)
   stop                          Остановить все
   restart                       Перезапустить все
   monitor                       Мониторинг
@@ -458,6 +459,37 @@ cmd_migrate() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# cmd_secrets — управление секретами
+# ─────────────────────────────────────────────────────────────────────────────
+cmd_secrets() {
+  local sub="${1:-}"
+  shift || true
+
+  case "$sub" in
+    clear)
+      if [[ ! -f "${SECRETS_FILE}" ]]; then
+        log_info "Файл секретов не существует"
+        return 0
+      fi
+      local count
+      count=$(secret_count 2>/dev/null || echo "0")
+      if (( count == 0 )); then
+        log_info "Секретов нет"
+        return 0
+      fi
+      log_step "Удаление всех секретов (${count} записей)..."
+      atomic_write "${SECRETS_FILE}" "id,secret,type,domain,user_id,created_at,expires_at,status,comment"
+      log_info "Все секреты удалены"
+      ;;
+    *)
+      log_error "Неизвестная подкоманда: secrets $sub"
+      echo "  Доступные: clear"
+      return 1
+      ;;
+  esac
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # main — диспетчер команд
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
@@ -473,6 +505,7 @@ main() {
     domain)    cmd_domain "$@" ;;
     user)      cmd_user "$@" ;;
     migrate)   cmd_migrate "$@" ;;
+    secrets)   cmd_secrets "$@" ;;
     stop)      cmd_stop "$@" ;;
     restart)   cmd_restart "$@" ;;
     monitor)   cmd_monitor "$@" ;;
