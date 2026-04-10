@@ -336,20 +336,7 @@ domain_start() {
   local domain="$1"
   local cname
   cname=$(container_name_for_domain "$domain")
-
-  # Проверяем, есть ли хоть один активный секрет для домена
-  local has_secret
-  has_secret=$(secrets_active_for_domain "$domain" 2>/dev/null | head -1 || echo "")
-  if [[ -z "$has_secret" ]]; then
-    log_error "Нет секрета для домена '${domain}'"
-    return 1
-  fi
-  if docker_start_for_domain "$domain" "$cname"; then
-    log_info "Домен '${domain}' запущен"
-  else
-    log_error "Не удалось запустить домен '${domain}'"
-    return 1
-  fi
+  docker_start_for_domain "$domain" "$cname"
 }
 
 domain_logs() {
