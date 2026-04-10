@@ -20,10 +20,6 @@ source "${MTPX_ROOT}/lib/util.sh"
 source "${MTPX_ROOT}/lib/config.sh"
 # shellcheck source=lib/secret.sh
 source "${MTPX_ROOT}/lib/secret.sh"
-# shellcheck source=lib/domain.sh
-source "${MTPX_ROOT}/lib/domain.sh"
-# shellcheck source=lib/docker.sh
-source "${MTPX_ROOT}/lib/docker.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Инициализация
@@ -135,10 +131,8 @@ user_add() {
     done < "${DOMAINS_FILE}"
 
     if (( domain_count > 0 )); then
-      # Перегенерировать конфиги и перезапустить контейнеры
-      log_step "Применение новых секретов..."
-      docker_config_sync_all
-      log_info "Секреты применены для ${domain_count} домен(ов)"
+      log_info "Создано секретов для ${domain_count} домен(ов)"
+      log_info "Примените: mtpx apply  (перезапуск контейнеров с новыми секретами)"
     else
       log_warn "Нет доменов. Секреты будут созданы при добавлении домена."
     fi
@@ -181,11 +175,8 @@ user_remove() {
   # Меняем статус пользователя
   _user_set_field "$uid" "status" "revoked"
 
-  # Перегенерировать конфиги и перезапустить
-  log_step "Применение изменений..."
-  docker_config_sync_all
-
   log_info "Пользователь '${username}' удалён"
+  log_info "Примените: mtpx apply  (перезапуск контейнеров)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -313,8 +304,8 @@ user_revoke() {
   count=$(secrets_count_for_user "$uid")
   if (( count > 0 )); then
     secrets_revoke_user "$uid"
-    docker_config_sync_all
     log_info "Отозвано ${count} секретов пользователя '${username}'"
+    log_info "Примените: mtpx apply"
   else
     log_warn "У пользователя '${username}' нет активных секретов"
   fi
@@ -355,8 +346,8 @@ user_rotate() {
   fi
 
   if (( domain_count > 0 )); then
-    docker_config_sync_all
     log_info "Секреты перегенерированы для ${domain_count} домен(ов)"
+    log_info "Примените: mtpx apply"
   fi
 }
 

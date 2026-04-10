@@ -26,27 +26,8 @@ source "${MTPX_ROOT}/lib/docker.sh"
 # shellcheck source=lib/config_proxy.sh
 source "${MTPX_ROOT}/lib/config_proxy.sh"
 # shellcheck source=lib/user.sh
+# Цикл разорван: user.sh больше не source-ит docker.sh
 source "${MTPX_ROOT}/lib/user.sh" 2>/dev/null || true
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Утилиты
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── normalize_domain — преобразовать домен в имя контейнера ──────────────────
-# ya.ru → ya-ru
-# cloudflare.com → cloudflare-com
-# sub.domain.com → sub-domain-com
-# ─────────────────────────────────────────────────────────────────────────────
-normalize_domain() {
-  printf '%s' "$1" | tr '.' '-' | tr '_' '-' | tr '[:upper:]' '[:lower:]'
-}
-
-# ── container_name_for_domain — полное имя контейнера ────────────────────────
-container_name_for_domain() {
-  local norm
-  norm=$(normalize_domain "$1")
-  printf 'mtproto-%s' "$norm"
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # domain_add — создать домен + контейнер + секреты для всех пользователей

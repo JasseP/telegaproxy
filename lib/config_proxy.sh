@@ -11,8 +11,6 @@ set -euo pipefail
 source "${MTPX_ROOT}/lib/util.sh"
 # shellcheck source=lib/secret.sh
 source "${MTPX_ROOT}/lib/secret.sh"
-# shellcheck source=lib/domain.sh
-source "${MTPX_ROOT}/lib/domain.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # generate_proxy_config — создать Python-конфиг для домена

@@ -19,8 +19,6 @@ source "${MTPX_ROOT}/lib/util.sh"
 source "${MTPX_ROOT}/lib/config.sh"
 # shellcheck source=lib/secret.sh
 source "${MTPX_ROOT}/lib/secret.sh"
-# shellcheck source=lib/domain.sh
-source "${MTPX_ROOT}/lib/domain.sh"
 # shellcheck source=lib/config_proxy.sh
 source "${MTPX_ROOT}/lib/config_proxy.sh"
 
