@@ -152,24 +152,29 @@ domain_list() {
   echo "│ Домен            │ Контейнер            │ Статус   │ Порт │ Secret                        │"
   echo "├──────────────────┼──────────────────────┼──────────┼──────┼───────────────────────────────┤"
 
-  local first=true
+  local has_domains=false
   while IFS= read -r domain || [[ -n "$domain" ]]; do
     domain=$(printf '%s' "$domain" | tr -d '\r')
     [[ -z "$domain" ]] && continue
+    [[ "$domain" == "domain" ]] && continue  # пропуск заголовка
 
-    if $first; then first=false; continue; fi  # пропуск заголовка CSV (если вдруг)
-
+    has_domains=true
     local cname cstatus port masked_secret
-    cname=$(container_name_for_domain "$domain")
-    cstatus=$(docker_container_status "$cname")
-    port=$(docker_container_port "$cname" || echo "-")
-    masked_secret=$(secrets_masked_for_domain "$domain" || echo "-")
+
+    cname=$(container_name_for_domain "$domain") || cname="unknown"
+    cstatus=$(docker_container_status "$cname" 2>/dev/null) || cstatus="?"
+    port=$(docker_container_port "$cname" 2>/dev/null) || port="-"
+    masked_secret=$(secrets_masked_for_domain "$domain" 2>/dev/null) || masked_secret="none"
 
     printf "│ %-16s │ %-20s │ %-8s │ %-4s │ %-29s │\n" \
       "$domain" "$cname" "$cstatus" "$port" "$masked_secret"
   done < "${DOMAINS_FILE}"
 
   echo "└──────────────────┴──────────────────────┴──────────┴──────┴───────────────────────────────┘"
+
+  if ! $has_domains; then
+    echo "  Нет доменов. Добавьте: mtpx domain add <domain>"
+  fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
