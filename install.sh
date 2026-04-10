@@ -370,9 +370,35 @@ log_info "Symlink создан: ${INSTALL_DIR}/mtpx -> ${SCRIPT_DIR}/mtpx"
 # Проверяем, есть ли INSTALL_DIR в PATH
 # :${PATH}: — оборачиваем, чтобы найти :/home/user/.local/bin: даже в начале/конце
 if [[ ":${PATH}:" != *":${INSTALL_DIR}:"* ]]; then
-  log_warn "${INSTALL_DIR} не в PATH"
-  echo "  Добавьте в ~/.bashrc или ~/.zshrc:"
-  echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+  log_warn "${INSTALL_DIR} не в PATH — добавляем автоматически..."
+
+  # Строка для добавления (одинаковая для всех shell)
+  _export_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
+
+  # Список файлов конфигурации для проверки
+  _shell_configs=()
+  [[ -f "${HOME}/.bashrc" ]] && _shell_configs+=("${HOME}/.bashrc")
+  [[ -f "${HOME}/.zshrc" ]] && _shell_configs+=("${HOME}/.zshrc")
+  [[ -f "${HOME}/.profile" ]] && _shell_configs+=("${HOME}/.profile")
+  # Если ни одного конфига нет — создаём .bashrc
+  if [[ ${#_shell_configs[@]} -eq 0 ]]; then
+    _shell_configs+=("${HOME}/.bashrc")
+    touch "${HOME}/.bashrc"
+  fi
+
+  for _config_file in "${_shell_configs[@]}"; do
+    # Проверяем, нет ли уже такой строки в файле
+    if ! grep -qF "${INSTALL_DIR}" "$_config_file" 2>/dev/null; then
+      echo "" >> "$_config_file"
+      echo "# Added by mtpx installer" >> "$_config_file"
+      echo "$_export_line" >> "$_config_file"
+      log_info "Добавлено в $(basename "$_config_file"): export PATH=...${INSTALL_DIR}"
+    fi
+  done
+
+  # Применяем PATH для текущей сессии (чтобы mtpx работал сразу)
+  export PATH="${INSTALL_DIR}:${PATH}"
+  log_info "PATH обновлён для текущей сессии"
 else
   log_info "${INSTALL_DIR} уже в PATH"
 fi
