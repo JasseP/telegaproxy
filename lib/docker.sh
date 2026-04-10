@@ -124,9 +124,18 @@ docker_start_for_domain() {
   local cname="$2"
   local port="${3:-}"
 
-  # Генерируем конфиг (если ещё не существует)
-  if ! generate_proxy_config "$domain" 2>/dev/null; then
-    log_error "Нет секретов для домена '${domain}' — нельзя запустить контейнер"
+  # Нормализуем имя конфига
+  local norm
+  norm=$(normalize_domain "$domain")
+  local config_file="${CONFIG_DIR}/proxy-${norm}.py"
+
+  # Генерируем конфиг (если секреты есть — хорошо, если нет — с пустым списком)
+  generate_proxy_config "$domain" 2>/dev/null || true
+
+  # Если конфига всё равно нет — не запускаем
+  if [[ ! -f "$config_file" ]]; then
+    log_error "Конфиг не найден и не создан: ${config_file}"
+    log_warn "Добавьте пользователя и секреты: mtpx user add <name>"
     return 1
   fi
 
