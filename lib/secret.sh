@@ -23,12 +23,17 @@ secrets_init() {
     return 0
   fi
 
-  # ── Миграция v2 → v3: добавить колонку user_id ────────────────────────
-  # v2: id,secret,type,domain,created_at,expires_at,status,comment (8 колонок)
-  # v3: id,secret,type,domain,user_id,created_at,expires_at,status,comment (9 колонок)
-  # Проверяем первую строку данных — если 8 полей, значит старый формат
+  # Всегда пытаcь мигрировать (idempotent)
+  _secrets_migrate_v2_v3
+}
+
+# ── Миграция v2 → v3: добавить колонку user_id ────────────────────────────
+_secrets_migrate_v2_v3() {
+  # Проверяем первую строку данных
   local first_data
   first_data=$(tail -n +2 "${SECRETS_FILE}" | head -1)
+  [[ -z "$first_data" ]] && return 0
+
   local field_count
   field_count=$(echo "$first_data" | awk -F',' '{print NF}')
 
@@ -37,15 +42,22 @@ secrets_init() {
     local tmp
     tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
     echo "id,secret,type,domain,user_id,created_at,expires_at,status,comment" > "$tmp"
-    # Вставляем пустой user_id между domain и created_at
-    tail -n +2 "${SECRETS_FILE}" | while IFS=',' read -r id secret type domain created expires status comment; do
-      printf '%s,%s,%s,%s,,%s,%s,%s,%s\n' \
-        "$id" "$secret" "$type" "$domain" "$created" "$expires" "$status" "$comment" >> "$tmp"
+    # Вставляем пустой user_id между domain(4) и created_at(5)
+    tail -n +2 "${SECRETS_FILE}" | while IFS= read -r line; do
+      # Заменяем только первую запятую после 4-го поля на ",,"
+      echo "$line" | awk -F',' '{
+        printf "%s,%s,%s,%s,,%s,%s,%s,%s\n", $1,$2,$3,$4,$5,$6,$7,$8
+      }' >> "$tmp"
     done
     chmod 600 "$tmp"
     mv -f "$tmp" "${SECRETS_FILE}"
     log_info "Миграция завершена"
   fi
+}
+
+# ── migrate_secrets — публичная команда миграции ────────────────────────────
+migrate_secrets() {
+  _secrets_migrate_v2_v3
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

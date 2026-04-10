@@ -134,8 +134,9 @@ docker_start_for_domain() {
 
   # Если конфига всё равно нет — не запускаем
   if [[ ! -f "$config_file" ]]; then
-    log_error "Конфиг не найден и не создан: ${config_file}"
-    log_warn "Добавьте пользователя и секреты: mtpx user add <name>"
+    log_error "Нет секретов для домена '${domain}' — контейнер не запущен"
+    log_info "Создайте пользователя: mtpx user add <name>"
+    log_info "Затем: mtpx apply"
     return 1
   fi
 

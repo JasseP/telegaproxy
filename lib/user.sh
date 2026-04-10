@@ -132,7 +132,6 @@ user_add() {
 
     if (( domain_count > 0 )); then
       log_info "Создано секретов для ${domain_count} домен(ов)"
-      log_info "Примените: mtpx apply  (перезапуск контейнеров с новыми секретами)"
     else
       log_warn "Нет доменов. Секреты будут созданы при добавлении домена."
     fi
@@ -176,7 +175,6 @@ user_remove() {
   _user_set_field "$uid" "status" "revoked"
 
   log_info "Пользователь '${username}' удалён"
-  log_info "Примените: mtpx apply  (перезапуск контейнеров)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -305,7 +303,6 @@ user_revoke() {
   if (( count > 0 )); then
     secrets_revoke_user "$uid"
     log_info "Отозвано ${count} секретов пользователя '${username}'"
-    log_info "Примените: mtpx apply"
   else
     log_warn "У пользователя '${username}' нет активных секретов"
   fi
@@ -347,7 +344,6 @@ user_rotate() {
 
   if (( domain_count > 0 )); then
     log_info "Секреты перегенерированы для ${domain_count} домен(ов)"
-    log_info "Примените: mtpx apply"
   fi
 }
 

@@ -70,6 +70,7 @@ mtpx v3 — MTProto Proxy (multi-user, multi-domain)
   user revoke <username>        Отозвать секреты (без удаления)
   user rotate <username>        Перегенерировать секреты
 
+  migrate                       Миграция данных (v2→v3)
   stop                          Остановить все
   restart                       Перезапустить все
   monitor                       Мониторинг
@@ -386,10 +387,16 @@ cmd_user() {
     add)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user add <username>"; return 1; }
       user_add "$@"
+      # После добавления пользователя — перезапускаем контейнеры
+      if [[ -f "${DOMAINS_FILE}" ]]; then
+        docker_config_sync_all
+      fi
       ;;
     remove|rm)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user remove <username>"; return 1; }
       user_remove "$1"
+      # После удаления — перезапускаем контейнеры
+      docker_config_sync_all
       ;;
     list|ls)
       user_list
@@ -405,10 +412,12 @@ cmd_user() {
     revoke)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user revoke <username>"; return 1; }
       user_revoke "$1"
+      docker_config_sync_all
       ;;
     rotate)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user rotate <username>"; return 1; }
       user_rotate "$1"
+      docker_config_sync_all
       ;;
     *)
       log_error "Неизвестная подкоманда: user $sub"
@@ -440,6 +449,15 @@ cmd_monitor() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# cmd_migrate — миграция данных
+# ─────────────────────────────────────────────────────────────────────────────
+cmd_migrate() {
+  log_step "Миграция данных..."
+  migrate_secrets
+  log_info "Миграция завершена"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # main — диспетчер команд
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
@@ -454,6 +472,7 @@ main() {
     inspect)   cmd_inspect "$@" ;;
     domain)    cmd_domain "$@" ;;
     user)      cmd_user "$@" ;;
+    migrate)   cmd_migrate "$@" ;;
     stop)      cmd_stop "$@" ;;
     restart)   cmd_restart "$@" ;;
     monitor)   cmd_monitor "$@" ;;
