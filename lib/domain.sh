@@ -255,7 +255,18 @@ domain_stop() {
   local domain="$1"
   local cname
   cname=$(container_name_for_domain "$domain")
-  docker_stop_container "$cname"
+  if docker_container_running "$cname"; then
+    log_step "Остановка ${cname}..."
+    docker_stop_container "$cname"
+    if docker_container_running "$cname"; then
+      log_error "Не удалось остановить ${cname}"
+      return 1
+    else
+      log_info "Домен '${domain}' остановлен"
+    fi
+  else
+    log_warn "Контейнер ${cname} уже не запущен"
+  fi
 }
 
 domain_start() {
@@ -268,7 +279,12 @@ domain_start() {
     log_error "Нет секрета для домена '${domain}'"
     return 1
   fi
-  docker_start_for_domain "$domain" "$cname" "$secret"
+  if docker_start_for_domain "$domain" "$cname" "$secret"; then
+    log_info "Домен '${domain}' запущен"
+  else
+    log_error "Не удалось запустить домен '${domain}'"
+    return 1
+  fi
 }
 
 domain_logs() {
