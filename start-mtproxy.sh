@@ -17,13 +17,13 @@ if [[ ! -f "${MTPX}" ]]; then
   exit 1
 fi
 
-echo "🚀 Запуск MTProto прокси (v2: multi-proxy)"
+echo "🚀 Запуск MTProto прокси (v3: multi-user)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Инициализация (если ещё не инициализировано)
+# Инициализация
 bash "${MTPX}" init 2>/dev/null || true
 
-# Если нет доменов — создаём первый по умолчанию
+# Если нет доменов — создаём первый
 DOMAIN_COUNT=$(bash "${MTPX}" domain list 2>/dev/null | grep -c 'mtproto-' || echo "0")
 if [[ "$DOMAIN_COUNT" -eq 0 ]]; then
   echo "📌 Нет доменов — создаю '${DEFAULT_DOMAIN:-ya.ru}'..."
@@ -38,7 +38,9 @@ bash "${MTPX}" apply
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🔗 Ссылки для подключения:"
-bash "${MTPX}" domain links
+echo "👤 Пользователи и ссылки:"
+bash "${MTPX}" user list 2>/dev/null || echo "  Нет пользователей"
 echo ""
-echo "💡 Полный контроль: ./mtpx help"
+echo "💡 Создать пользователя: mtpx user add <name>"
+echo "💡 Получить ссылки:    mtpx user link <name>"
+echo ""

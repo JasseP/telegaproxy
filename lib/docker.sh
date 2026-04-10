@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 ###############################################################################
-# lib/docker.sh — управление Docker-контейнерами MTProxy (multi-proxy v2)
+# lib/docker.sh — управление Docker-контейнерами MTProxy (v3: multi-user)
 #
-# Архитектура:
-#   Каждый домен = отдельный контейнер.
-#   Имя контейнера: mtproto-<normalized_domain>
-#   Примеры: mtproto-ya-ru, mtproto-google-com, mtproto-cloudflare-com
+# Образ: alexbers/mtprotoproxy — Python-реализация MTProxy с поддержкой
+# нескольких секретов в одном контейнере.
 #
-# Это ЕДИНСТВЕННОЕ место в кодовой базе с вызовами Docker.
-# Для замены backend (podman, bare-metal) — переписать только этот файл.
+# Конфиг монтируется через volume:
+#   -v config/proxy-<domain>.py:/etc/mtproxy/proxy.conf:ro
+#
+# Каждый домен = отдельный контейнер.
+# Каждый пользователь = отдельный секрет в конфиге контейнера.
 ###############################################################################
 set -euo pipefail
 
@@ -18,31 +19,34 @@ source "${MTPX_ROOT}/lib/util.sh"
 source "${MTPX_ROOT}/lib/config.sh"
 # shellcheck source=lib/secret.sh
 source "${MTPX_ROOT}/lib/secret.sh"
+# shellcheck source=lib/domain.sh
+source "${MTPX_ROOT}/lib/domain.sh"
+# shellcheck source=lib/config_proxy.sh
+source "${MTPX_ROOT}/lib/config_proxy.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Образ прокси
 # ─────────────────────────────────────────────────────────────────────────────
-MT_PROXY_IMAGE="telegrammessenger/proxy"
+# alexbers/mtprotoproxy — поддерживает несколько секретов, Fake TLS
+# Альтернатива: можно заменить на другой форк, изменив только эту переменную
+# и логику запуска.
+# ─────────────────────────────────────────────────────────────────────────────
+MT_PROXY_IMAGE="alexbers/mtprotoproxy"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Проверка состояния контейнера (по имени)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── docker_container_exists — контейнер существует (даже stopped) ────────────
 docker_container_exists() {
   local cname="$1"
   docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxF "$cname"
 }
 
-# ── docker_container_running — контейнер запущен прямо сейчас ────────────────
 docker_container_running() {
   local cname="$1"
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qxF "$cname"
 }
 
-# ── docker_container_status — текстовый статус ───────────────────────────────
-# Возвращает: running, stopped, none
-# ─────────────────────────────────────────────────────────────────────────────
 docker_container_status() {
   local cname="$1"
   if docker_container_running "$cname"; then
@@ -54,7 +58,6 @@ docker_container_status() {
   fi
 }
 
-# ── docker_container_port — внешний порт контейнера ──────────────────────────
 docker_container_port() {
   local cname="$1"
   if ! docker_container_running "$cname"; then
@@ -64,7 +67,6 @@ docker_container_port() {
   local port_info
   port_info=$(docker port "$cname" 2>/dev/null || echo "")
   if [[ -n "$port_info" ]]; then
-    # Формат: 443/tcp -> 0.0.0.0:4433 или 443/tcp -> :::4433
     echo "$port_info" | head -1 | grep -oE '[0-9]+$' || echo "-"
   else
     echo "-"
@@ -75,7 +77,6 @@ docker_container_port() {
 # Операции с контейнерами
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── docker_stop_container — остановить ──────────────────────────────────────
 docker_stop_container() {
   local cname="$1"
   if docker_container_running "$cname"; then
@@ -83,7 +84,6 @@ docker_stop_container() {
   fi
 }
 
-# ── docker_remove_container — остановить и удалить ──────────────────────────
 docker_remove_container() {
   local cname="$1"
   docker_stop_container "$cname"
@@ -92,7 +92,6 @@ docker_remove_container() {
   fi
 }
 
-# ── docker_restart_container — перезапустить ────────────────────────────────
 docker_restart_container() {
   local cname="$1"
   if ! docker_container_running "$cname"; then
@@ -104,7 +103,6 @@ docker_restart_container() {
   log_ok
 }
 
-# ── docker_container_logs ───────────────────────────────────────────────────
 docker_container_logs() {
   local cname="$1"
   local lines="${2:-20}"
@@ -118,23 +116,23 @@ docker_container_logs() {
 # ─────────────────────────────────────────────────────────────────────────────
 # docker_start_for_domain — запустить контейнер для домена
 # ─────────────────────────────────────────────────────────────────────────────
-# docker_start_for_domain <domain> <container_name> <secret> [port]
+# docker_start_for_domain <domain> <container_name> [port]
 #
-# Запускает контейнер с:
-#   --name <container_name>
-#   --restart unless-stopped
-#   -p <port>:443
-#   -e SECRET=<secret>
-#
-# Если port не указан — выбирает свободный из стандартного диапазона.
+# Монтирует конфиг: config/proxy-<domain>.py → /etc/mtproxy/proxy.conf
+# alexbers/mtprotoproxy читает конфиг и запускается со всеми секретами.
 # ─────────────────────────────────────────────────────────────────────────────
 docker_start_for_domain() {
   local domain="$1"
   local cname="$2"
-  local secret="$3"
-  local port="${4:-}"
+  local port="${3:-}"
 
-  # Если порт не указан — ищем свободный
+  # Генерируем конфиг (если ещё не существует)
+  if ! generate_proxy_config "$domain" 2>/dev/null; then
+    log_error "Нет секретов для домена '${domain}' — нельзя запустить контейнер"
+    return 1
+  fi
+
+  # Определяем порт
   if [[ -z "$port" ]]; then
     port=$(find_free_port 443 8443 8444 8445 8446 8447 8448 8449 8450) || {
       log_error "Нет свободных портов для '${domain}'"
@@ -142,35 +140,37 @@ docker_start_for_domain() {
     }
   fi
 
-  # Проверяем, не занят ли контейнер уже
-  if docker_container_running "$cname"; then
-    log_warn "Контейнер ${cname} уже запущен"
-    return 0
+  # Нормализуем имя конфига
+  local norm
+  norm=$(normalize_domain "$domain")
+  local config_file="${CONFIG_DIR}/proxy-${norm}.py"
+
+  if [[ ! -f "$config_file" ]]; then
+    log_error "Конфиг не найден: ${config_file}"
+    return 1
   fi
 
-  # Если контейнер существует (stopped) — удаляем
+  # Удаляем старый контейнер, если есть
   if docker_container_exists "$cname"; then
-    docker rm "$cname" >/dev/null 2>&1 || true
+    docker_remove_container "$cname"
   fi
 
   log_step "Запуск ${cname}..."
   echo "  Образ:   ${MT_PROXY_IMAGE}"
   echo "  Домен:   ${domain}"
-  echo "  Порт:    ${port}:443"
-  echo "  Secret:  $(mask_secret "$secret")"
+  echo "  Порт:    ${port}"
+  echo "  Конфиг:  proxy-${norm}.py"
 
   if docker run -d \
     --name "$cname" \
     --restart unless-stopped \
     -p "${port}:443" \
-    -e SECRET="${secret}" \
+    -v "${config_file}:/etc/mtproxy/proxy.conf:ro" \
     "${MT_PROXY_IMAGE}" >/dev/null 2>&1; then
 
-    # Ждём запуска
     sleep 2
 
     if docker_container_running "$cname"; then
-      # Обновляем runtime (порт первого домена — для обратной совместимости)
       runtime_set "PORT" "$port"
       runtime_set "LAST_APPLY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       log_info "Контейнер ${cname} запущен"
@@ -187,15 +187,43 @@ docker_start_for_domain() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# apply_all — применить конфигурацию ко всем доменам
+# docker_config_sync_all — перегенерировать конфиги всех доменов и перезапустить
 # ─────────────────────────────────────────────────────────────────────────────
-# Для каждого домена в domains.txt:
-#   1. Находит активный секрет
-#   2. Запускает (или перезапускает) контейнер
-#
-# Если домен уже запущен — пропускает (без пересоздания).
-# Если контейнер stopped — пересоздаёт.
-# Если контейнера нет — создаёт.
+# Вызывается при:
+#   • Добавлении/удалении пользователя
+#   • Добавлении/удалении домена
+#   • Ротации секретов
+# ─────────────────────────────────────────────────────────────────────────────
+docker_config_sync_all() {
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    return 0
+  fi
+
+  local sync_count=0
+  while IFS= read -r domain || [[ -n "$domain" ]]; do
+    domain=$(printf '%s' "$domain" | tr -d '\r')
+    [[ -z "$domain" ]] && continue
+    [[ "$domain" == "domain" ]] && continue
+
+    # Перегенерируем конфиг
+    generate_proxy_config "$domain" 2>/dev/null || continue
+
+    # Перезапускаем контейнер, если он запущен
+    local cname
+    cname=$(container_name_for_domain "$domain")
+    if docker_container_running "$cname"; then
+      docker_restart_container "$cname"
+      sync_count=$(( sync_count + 1 ))
+    fi
+  done < "${DOMAINS_FILE}"
+
+  if (( sync_count > 0 )); then
+    log_info "Перезапущено контейнеров: ${sync_count}"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# apply_all — запустить все домены
 # ─────────────────────────────────────────────────────────────────────────────
 apply_all() {
   if [[ ! -f "${DOMAINS_FILE}" ]]; then
@@ -208,39 +236,23 @@ apply_all() {
   while IFS= read -r domain || [[ -n "$domain" ]]; do
     domain=$(printf '%s' "$domain" | tr -d '\r')
     [[ -z "$domain" ]] && continue
-    [[ "$domain" == "domain" ]] && continue  # заголовок
+    [[ "$domain" == "domain" ]] && continue
 
     total=$(( total + 1 ))
-    local cname secret
+    local cname
     cname=$(container_name_for_domain "$domain")
-    secret=$(secrets_active_for_domain "$domain")
-
-    if [[ -z "$secret" ]]; then
-      log_warn "Нет секрета для '${domain}' — пропускаю"
-      continue
-    fi
-
-    # Проверяем текущий статус
     local cstatus
     cstatus=$(docker_container_status "$cname")
 
     case "$cstatus" in
       running)
-        log_info "${domain} (${cname}): уже запущен ✓"
+        # Перегенерируем конфиг (могли добавиться пользователи)
+        generate_proxy_config "$domain" 2>/dev/null || true
+        docker_restart_container "$cname"
         started=$(( started + 1 ))
         ;;
-      stopped)
-        log_step "${domain} (${cname}): пересоздаю..."
-        docker_remove_container "$cname"
-        if docker_start_for_domain "$domain" "$cname" "$secret"; then
-          started=$(( started + 1 ))
-        else
-          failed=$(( failed + 1 ))
-        fi
-        ;;
-      none)
-        log_step "${domain} (${cname}): запускаю..."
-        if docker_start_for_domain "$domain" "$cname" "$secret"; then
+      stopped|none)
+        if docker_start_for_domain "$domain" "$cname"; then
           started=$(( started + 1 ))
         else
           failed=$(( failed + 1 ))
@@ -266,38 +278,29 @@ apply_all() {
 # ─────────────────────────────────────────────────────────────────────────────
 apply_single() {
   local domain="$1"
-  local cname secret
+  local cname
   cname=$(container_name_for_domain "$domain")
-  secret=$(secrets_active_for_domain "$domain")
-
-  if [[ -z "$secret" ]]; then
-    log_error "Нет секрета для домена '${domain}'"
-    return 1
-  fi
-
   docker_remove_container "$cname"
-  docker_start_for_domain "$domain" "$cname" "$secret"
+  docker_start_for_domain "$domain" "$cname"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Операции со ВСЕМИ контейнерами (для status/doctor)
+# Операции со ВСЕМИ контейнерами
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Считаем запущенные mtproto-контейнеры
 count_running_proxies() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^mtproto-' || echo "0"
 }
 
-# Считаем все mtproto-контейнеры
 count_all_proxies() {
   docker ps -a --format '{{.Names}}' 2>/dev/null | grep -c '^mtproto-' || echo "0"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# stop_all / restart_all — операции со всеми прокси
-# ─────────────────────────────────────────────────────────────────────────────
 stop_all() {
   local count=0
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    return 0
+  fi
   while IFS= read -r domain || [[ -n "$domain" ]]; do
     domain=$(printf '%s' "$domain" | tr -d '\r')
     [[ -z "$domain" ]] && continue
@@ -315,6 +318,9 @@ stop_all() {
 
 restart_all() {
   local count=0
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    return 0
+  fi
   while IFS= read -r domain || [[ -n "$domain" ]]; do
     domain=$(printf '%s' "$domain" | tr -d '\r')
     [[ -z "$domain" ]] && continue

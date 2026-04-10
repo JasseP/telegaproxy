@@ -23,6 +23,10 @@ source "${MTPX_ROOT}/lib/config.sh"
 source "${MTPX_ROOT}/lib/secret.sh"
 # shellcheck source=lib/docker.sh
 source "${MTPX_ROOT}/lib/docker.sh"
+# shellcheck source=lib/config_proxy.sh
+source "${MTPX_ROOT}/lib/config_proxy.sh"
+# shellcheck source=lib/user.sh
+source "${MTPX_ROOT}/lib/user.sh" 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Утилиты
@@ -45,57 +49,100 @@ container_name_for_domain() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# domain_add — создать домен + контейнер + секрет
+# domain_add — создать домен + контейнер + секреты для всех пользователей
 # ─────────────────────────────────────────────────────────────────────────────
 # domain_add <domain> [port]
 #
 # Что делает:
 #   1. Проверяет валидность домена
 #   2. Проверяет, нет ли уже такого контейнера
-#   3. Генерирует Fake TLS секрет для домена
-#   4. Сохраняет секрет в secrets.csv
-#   5. Запускает Docker-контейнер
-#   6. Выводит ссылку для подключения
+#   3. Для каждого активного пользователя генерирует Fake TLS секрет
+#   4. Если пользователей нет — создаёт один системный секрет
+#   5. Генерирует Python-конфиг для домена
+#   6. Запускает Docker-контейнер с volume-монтированием конфига
 # ─────────────────────────────────────────────────────────────────────────────
 domain_add() {
   local domain="$1"
   local port="${2:-}"
 
-  # Валидация
   validate_domain "$domain"
 
-  # Проверяем, не существует ли уже такой контейнер
   local cname
   cname=$(container_name_for_domain "$domain")
   if docker_container_exists "$cname"; then
     log_warn "Домен '${domain}' уже запущен (контейнер: ${cname})"
-    echo "  Ссылка: mtpx domain link ${domain}"
+    echo "  Ссылка: mtpx domain links"
     return 0
   fi
 
-  # Генерируем секрет
-  log_step "Генерация секрета для '${domain}'..."
-  local secret
-  secret=$(generate_fake_tls_secret "$domain")
+  log_step "Создание домена '${domain}'..."
 
-  # Сохраняем в CSV
-  local id created_at
-  id=$(_secret_id)
-  created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  secrets_add_raw "$id" "$secret" "fake_tls" "$domain" "$created_at" "active" "auto-created by domain add"
+  # Определяем пользователей
+  local users=""
+  if [[ -f "${USERS_FILE}" ]]; then
+    users=$(active_users 2>/dev/null || echo "")
+  fi
 
-  # Запускаем контейнер
+  if [[ -n "$users" ]]; then
+    # Создаём секреты для каждого пользователя
+    local user_count=0
+    while IFS=',' read -r uid username created status comment; do
+      [[ -z "$uid" ]] && continue
+      _create_secret_for_user "$uid" "$username" "$domain"
+      user_count=$(( user_count + 1 ))
+    done <<< "$users"
+    log_info "Создано секретов для ${user_count} пользователей"
+  else
+    # Нет пользователей — создаём один системный секрет
+    local secret id created_at
+    secret=$(generate_fake_tls_secret "$domain")
+    id=$(_secret_id)
+    created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    secrets_add_raw "$id" "$secret" "fake_tls" "$domain" "" "$created_at" "" "active" "system (no users)"
+    log_info "Создан системный секрет (нет пользователей)"
+  fi
+
+  # Запускаем контейнер (конфиг сгенерируется автоматически)
   log_step "Запуск контейнера ${cname}..."
-  if docker_start_for_domain "$domain" "$cname" "$secret" "$port"; then
+  if docker_start_for_domain "$domain" "$cname" "$port"; then
     log_info "Домен '${domain}' запущен"
     echo ""
-    echo "  Ссылка: mtpx domain link ${domain}"
+    echo "  Все ссылки: mtpx domain links"
+    echo "  Ссылки по пользователю: mtpx user link <username>"
   else
     log_error "Не удалось запустить контейнер для '${domain}'"
-    # Отзываем секрет, т.к. контейнер не запустился
-    _secret_set_field "$id" "status" "revoked"
     return 1
   fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _create_secret_for_user — создать секрет для пользователя на домене
+# ─────────────────────────────────────────────────────────────────────────────
+_create_secret_for_user() {
+  local uid="$1"
+  local username="$2"
+  local domain="$3"
+
+  # Проверяем, нет ли уже секрета
+  local existing
+  existing=$(secrets_active_for_user_domain "$uid" "$domain" 2>/dev/null || echo "")
+  if [[ -n "$existing" ]]; then
+    return 0
+  fi
+
+  local secret created_at sid
+  secret=$(generate_fake_tls_secret "$domain")
+  created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  sid=$(_secret_id)
+
+  local tmp
+  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
+  cat "${SECRETS_FILE}" > "$tmp"
+  # id,secret,type,domain,user_id,created_at,expires_at,status,comment
+  printf '%s,%s,%s,%s,%s,%s,,%s,%s\n' \
+    "$sid" "$secret" "fake_tls" "$domain" "$uid" "$created_at" "active" "user:${username}" >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${SECRETS_FILE}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +180,9 @@ domain_remove() {
     secrets_remove_domain "$domain"
     log_info "Удалено секретов: ${count}"
   fi
+
+  # Удаляем конфиг прокси
+  remove_proxy_config "$domain"
 
   log_info "Домен '${domain}' полностью удалён"
 }
@@ -208,10 +258,8 @@ domain_link() {
   printf 'tg://proxy?server=%s&port=%s&secret=%s\n' "$server" "$port" "$secret"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# domain_links — все ссылки для всех доменов
-# ─────────────────────────────────────────────────────────────────────────────
-domain_links() {
+# domain_links_all — все ссылки для всех доменов (первый секрет каждого)
+domain_links_all() {
   local server="${1:-}"
   if [[ -z "$server" ]]; then
     server=$(get_server_ip)
@@ -222,23 +270,57 @@ domain_links() {
     return 1
   fi
 
+  local found=0
   while IFS= read -r domain || [[ -n "$domain" ]]; do
     domain=$(printf '%s' "$domain" | tr -d '\r')
     [[ -z "$domain" ]] && continue
-    [[ "$domain" == "domain" ]] && continue  # заголовок CSV
+    [[ "$domain" == "domain" ]] && continue
 
-    local secret
-    secret=$(secrets_active_for_domain "$domain")
-    [[ -z "$secret" ]] && continue
+    # secrets_active_for_domain теперь возвращает "secret,user_id"
+    local first_secret
+    first_secret=$(secrets_active_for_domain "$domain" 2>/dev/null | head -1 | cut -d',' -f1 || echo "")
+    [[ -z "$first_secret" ]] && continue
 
     local cname port
     cname=$(container_name_for_domain "$domain")
-    port=$(docker_container_port "$cname" || echo "$DEFAULT_PORT")
+    port=$(docker_container_port "$cname" 2>/dev/null || echo "$DEFAULT_PORT")
 
     echo "  ${domain}:"
-    printf '    tg://proxy?server=%s&port=%s&secret=%s\n' "$server" "$port" "$secret"
+    printf '    tg://proxy?server=%s&port=%s&secret=%s\n' "$server" "$port" "$first_secret"
     echo ""
+    found=$(( found + 1 ))
   done < "${DOMAINS_FILE}"
+
+  if (( found == 0 )); then
+    log_warn "Нет активных секретов"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# domain_link — получить ссылку для конкретного домена
+# ─────────────────────────────────────────────────────────────────────────────
+domain_link() {
+  local domain="$1"
+  local server="${2:-}"
+
+  validate_domain "$domain"
+
+  local secret
+  secret=$(secrets_active_for_domain "$domain" 2>/dev/null | head -1 | cut -d',' -f1 || echo "")
+  if [[ -z "$secret" ]]; then
+    log_error "Нет активных секретов для домена '${domain}'"
+    return 1
+  fi
+
+  local cname port
+  cname=$(container_name_for_domain "$domain")
+  port=$(docker_container_port "$cname" 2>/dev/null || echo "$DEFAULT_PORT")
+
+  if [[ -z "$server" ]]; then
+    server=$(get_server_ip)
+  fi
+
+  printf 'tg://proxy?server=%s&port=%s&secret=%s\n' "$server" "$port" "$secret"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

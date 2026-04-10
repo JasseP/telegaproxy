@@ -71,14 +71,15 @@ log_ok()    { echo -e "${GREEN}  готово${NC}"; }
 export MTPX_ROOT
 
 # Абсолютные пути к ключевым директориям и файлам
-CONFIG_DIR="${MTPX_ROOT}/config"            # Конфигурация (domains.txt)
-STATE_DIR="${MTPX_ROOT}/state"              # Состояние (секреты, runtime, авто-ротация)
+CONFIG_DIR="${MTPX_ROOT}/config"            # Конфигурация (domains.txt, proxy-*.py)
+STATE_DIR="${MTPX_ROOT}/state"              # Состояние (секреты, пользователи, runtime)
 LIB_DIR="${MTPX_ROOT}/lib"                  # Библиотечные модули
 
 DOMAINS_FILE="${CONFIG_DIR}/domains.txt"    # Список доменов (первый = текущий)
+USERS_FILE="${STATE_DIR}/users.csv"         # Список пользователей
 SECRETS_FILE="${STATE_DIR}/secrets.csv"     # CSV с секретами
 RUNTIME_FILE="${STATE_DIR}/runtime.env"     # Runtime-параметры (порт, последнее применение)
-AUTO_TICK_FILE="${STATE_DIR}/auto_tick.env" # Настройки авто-ротации доменов
+AUTO_TICK_FILE="${STATE_DIR}/auto_tick.env" # Настройки авто-ротации (если понадобятся) доменов
 
 # Имя Docker-контейнера по умолчанию
 CONTAINER_NAME="mtproto-proxy"
@@ -135,6 +136,7 @@ atomic_write() {
 # ─────────────────────────────────────────────────────────────────────────────
 chmod_sensitive() {
   chmod 600 "${SECRETS_FILE}" 2>/dev/null || true
+  chmod 600 "${USERS_FILE}" 2>/dev/null || true
   chmod 600 "${RUNTIME_FILE}" 2>/dev/null || true
   chmod 600 "${AUTO_TICK_FILE}" 2>/dev/null || true
 }

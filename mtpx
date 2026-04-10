@@ -31,50 +31,60 @@ source "${MTPX_ROOT}/lib/docker.sh"
 source "${MTPX_ROOT}/lib/monitor.sh"
 # shellcheck source=lib/status.sh
 source "${MTPX_ROOT}/lib/status.sh"
+# shellcheck source=lib/user.sh
+source "${MTPX_ROOT}/lib/user.sh"
+# shellcheck source=lib/config_proxy.sh
+source "${MTPX_ROOT}/lib/config_proxy.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # usage — справка
 # ─────────────────────────────────────────────────────────────────────────────
 usage() {
   cat <<'EOF'
-mtpx v2 — управление MTProto Proxy (multi-proxy)
+mtpx v3 — MTProto Proxy (multi-user, multi-domain)
 
 Использование:
   mtpx <command> [subcommand] [args...]
 
 Команды:
   init                          Инициализация проекта
-  apply [domain]                Запустить все домены (или один конкретный)
+  apply [domain]                Запустить все домены (или один)
   status                        Сводка состояния
   doctor                        Диагностика
-  inspect [domain]              Детали контейнера (все или конкретный)
+  inspect [domain]              Детали контейнера
 
-  domain add <domain>           Создать домен + контейнер + секрет
-  domain remove <domain>        Удалить домен + контейнер + секреты
-  domain list                   Все домены с их статусом
-  domain link <domain>          Ссылка tg:// для конкретного домена
-  domain links                  Все ссылки для всех доменов
-  domain restart <domain>       Перезапустить контейнер домена
-  domain stop <domain>          Остановить контейнер домена
-  domain start <domain>         Запустить контейнер домена
-  domain logs <domain> [n]      Логи контейнера домена
+  domain add <domain>           Создать домен + контейнер + секреты
+  domain remove <domain>        Удалить домен + контейнер
+  domain list                   Все домены
+  domain links                  Все ссылки
+  domain restart <domain>       Перезапустить контейнер
+  domain stop <domain>          Остановить контейнер
+  domain start <domain>         Запустить контейнер
+  domain logs <domain> [n]      Логи
 
-  stop                          Остановить все прокси
-  restart                       Перезапустить все прокси
+  user add <username>           Создать пользователя + секреты для всех доменов
+  user remove <username>        Удалить пользователя + все секреты
+  user list                     Список пользователей
+  user link <username> [domain] Ссылка tg:// (все домены или конкретный)
+  user links <username>         Все ссылки пользователя
+  user revoke <username>        Отозвать секреты (без удаления)
+  user rotate <username>        Перегенерировать секреты
 
-  monitor                       Эвристический мониторинг
-  version                       Версия mtpx
-  help                          Эта справка
+  stop                          Остановить все
+  restart                       Перезапустить все
+  monitor                       Мониторинг
+  version                       Версия
+  help                          Справка
 
 Примеры:
   mtpx init
   mtpx domain add ya.ru
   mtpx domain add google.com
-  mtpx domain add cloudflare.com
+  mtpx user add alice
+  mtpx user add bob
+  mtpx user link alice        # все ссылки alice
+  mtpx user link alice ya.ru  # ссылка alice для ya.ru
   mtpx apply
-  mtpx domain list
-  mtpx domain links
-  mtpx domain remove google.com
 EOF
 }
 
@@ -82,18 +92,19 @@ EOF
 # version
 # ─────────────────────────────────────────────────────────────────────────────
 version() {
-  echo "mtpx v2.0.0 (multi-proxy)"
+  echo "mtpx v3.0.0 (multi-user)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # cmd_init — инициализация проекта
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_init() {
-  log_step "Инициализация mtpx v2..."
+  log_step "Инициализация mtpx v3..."
   echo ""
 
   ensure_dirs
   domains_init
+  users_init
   runtime_init
   secrets_init
   chmod_sensitive
@@ -103,17 +114,19 @@ cmd_init() {
   echo ""
   echo "  Структура:"
   echo "  ├── config/"
-  echo "  │   └── domains.txt        — список доменов"
+  echo "  │   ├── domains.txt        — список доменов"
+  echo "  │   └── proxy-*.py         — конфиги прокси (автоматические)"
   echo "  ├── state/"
-  echo "  │   ├── secrets.csv        — секреты (привязаны к домену)"
+  echo "  │   ├── users.csv          — пользователи"
+  echo "  │   └── secrets.csv        — секреты (user+domain)"
   echo "  │   └── runtime.env        — runtime параметры"
   echo "  └── lib/                    — модули"
   echo ""
   echo "  Следующие шаги:"
-  echo "  1. mtpx domain add ya.ru         — создать первый домен"
-  echo "  2. mtpx domain add google.com    — создать второй домен"
-  echo "  3. mtpx apply                    — запустить все домены"
-  echo "  4. mtpx domain links             — получить все ссылки"
+  echo "  1. mtpx domain add ya.ru      — создать домен"
+  echo "  2. mtpx user add alice        — создать пользователя"
+  echo "  3. mtpx user add bob          — ещё одного"
+  echo "  4. mtpx user link alice       — получить ссылки для alice"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -332,11 +345,11 @@ cmd_domain() {
       domain_list
       ;;
     link)
-      [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain link <domain>"; return 1; }
-      domain_link "$@"
+      log_error "Используйте: mtpx user link <username> [domain]"
+      return 1
       ;;
     links)
-      domain_links "$@"
+      domain_links_all "$@"
       ;;
     restart)
       [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain restart <domain>"; return 1; }
@@ -356,7 +369,50 @@ cmd_domain() {
       ;;
     *)
       log_error "Неизвестная подкоманда: domain $sub"
-      echo "  Доступные: add, remove, list, link, links, restart, stop, start, logs"
+      echo "  Доступные: add, remove, list, links, restart, stop, start, logs"
+      return 1
+      ;;
+  esac
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_user — диспетчер подкоманд user
+# ─────────────────────────────────────────────────────────────────────────────
+cmd_user() {
+  local sub="${1:-}"
+  shift || true
+
+  case "$sub" in
+    add)
+      [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user add <username>"; return 1; }
+      user_add "$@"
+      ;;
+    remove|rm)
+      [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user remove <username>"; return 1; }
+      user_remove "$1"
+      ;;
+    list|ls)
+      user_list
+      ;;
+    link)
+      [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user link <username>"; return 1; }
+      user_link "$@"
+      ;;
+    links)
+      [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user links <username>"; return 1; }
+      domain_links_for_user "$(user_get_id "$1")"
+      ;;
+    revoke)
+      [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user revoke <username>"; return 1; }
+      user_revoke "$1"
+      ;;
+    rotate)
+      [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user rotate <username>"; return 1; }
+      user_rotate "$1"
+      ;;
+    *)
+      log_error "Неизвестная подкоманда: user $sub"
+      echo "  Доступные: add, remove, list, link, links, revoke, rotate"
       return 1
       ;;
   esac
@@ -397,6 +453,7 @@ main() {
     doctor)    cmd_doctor "$@" ;;
     inspect)   cmd_inspect "$@" ;;
     domain)    cmd_domain "$@" ;;
+    user)      cmd_user "$@" ;;
     stop)      cmd_stop "$@" ;;
     restart)   cmd_restart "$@" ;;
     monitor)   cmd_monitor "$@" ;;
