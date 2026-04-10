@@ -21,7 +21,7 @@ source "${MTPX_ROOT}/lib/domain.sh"
 status_full() {
   echo ""
   echo "╔═════════════════════════════════════════════╗"
-  echo "║         MTProxy Status (v2: multi-proxy)    ║"
+  echo "║         MTProxy Status (v3: multi-user)     ║"
   echo "╠═════════════════════════════════════════════╣"
   echo "║"
 

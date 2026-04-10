@@ -20,6 +20,31 @@ secrets_init() {
   if [[ ! -f "${SECRETS_FILE}" ]]; then
     atomic_write "${SECRETS_FILE}" "id,secret,type,domain,user_id,created_at,expires_at,status,comment"
     log_info "Создан ${SECRETS_FILE}"
+    return 0
+  fi
+
+  # ── Миграция v2 → v3: добавить колонку user_id ────────────────────────
+  # v2: id,secret,type,domain,created_at,expires_at,status,comment (8 колонок)
+  # v3: id,secret,type,domain,user_id,created_at,expires_at,status,comment (9 колонок)
+  # Проверяем первую строку данных — если 8 полей, значит старый формат
+  local first_data
+  first_data=$(tail -n +2 "${SECRETS_FILE}" | head -1)
+  local field_count
+  field_count=$(echo "$first_data" | awk -F',' '{print NF}')
+
+  if [[ "$field_count" == "8" ]]; then
+    log_info "Миграция секретов: v2 → v3 (добавление user_id)..."
+    local tmp
+    tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
+    echo "id,secret,type,domain,user_id,created_at,expires_at,status,comment" > "$tmp"
+    # Вставляем пустой user_id между domain и created_at
+    tail -n +2 "${SECRETS_FILE}" | while IFS=',' read -r id secret type domain created expires status comment; do
+      printf '%s,%s,%s,%s,,%s,%s,%s,%s\n' \
+        "$id" "$secret" "$type" "$domain" "$created" "$expires" "$status" "$comment" >> "$tmp"
+    done
+    chmod 600 "$tmp"
+    mv -f "$tmp" "${SECRETS_FILE}"
+    log_info "Миграция завершена"
   fi
 }
 
