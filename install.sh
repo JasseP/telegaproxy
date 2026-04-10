@@ -29,7 +29,7 @@ set -euo pipefail
 INSTALL_DIR="${HOME}/.local/bin"
 
 # SCRIPT_DIR — абсолютный путь к директории с установщиком
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Цвета (копируем из util.sh, т.к. installer автономен и не source-ит модули)
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'

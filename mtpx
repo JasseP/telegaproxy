@@ -14,7 +14,7 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────────────────
 # Определяем корень проекта и загружаем модули
 # ─────────────────────────────────────────────────────────────────────────────
-MTPX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MTPX_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 export MTPX_ROOT
 
 # shellcheck source=lib/util.sh
