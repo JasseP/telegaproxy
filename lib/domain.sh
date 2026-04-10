@@ -24,6 +24,8 @@ set -euo pipefail
 source "${MTPX_ROOT}/lib/util.sh"
 # shellcheck source=lib/config.sh
 source "${MTPX_ROOT}/lib/config.sh"
+# shellcheck source=lib/secret.sh
+source "${MTPX_ROOT}/lib/secret.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto tick — конфигурация
@@ -197,6 +199,10 @@ auto_tick() {
   auto_set "AUTO_NEXT_ROTATE" "$(( now + interval ))"
 
   log_info "Домен ротирован: ${current} → ${new_domain}"
+
+  # Проверяем совместимость секретов и предупреждаем
+  _check_secret_compatibility "$current" "$new_domain"
+
   echo "  Не забудьте: mtpx apply  (для перезапуска прокси с новым доменом)"
 }
 
@@ -230,6 +236,53 @@ domain_rotate() {
   local new_domain
   new_domain=$(domain_current)
   log_info "Домен ротирован: ${current} → ${new_domain}"
+
+  # Проверяем совместимость секретов и предупреждаем
+  _check_secret_compatibility "$current" "$new_domain"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _check_secret_compatibility — проверка совместимости секретов при ротации
+# ─────────────────────────────────────────────────────────────────────────────
+# Fake TLS секреты содержат hex домена внутри себя (ee + hex(domain) + random).
+# После смены домена они становятся несовместимы:
+#   • Клиент думает, что подключается к ya.ru
+#   • Прокси маскируется под google.com
+#   • TLS handshake может провалиться
+#
+# Решение: НЕ менять секреты автоматически (это потребовало бы перераспределения
+# всем пользователям), а предупредить и предложить варианты.
+# ─────────────────────────────────────────────────────────────────────────────
+_check_secret_compatibility() {
+  local old_domain="$1"
+  local new_domain="$2"
+
+  if [[ ! -f "${SECRETS_FILE}" ]]; then
+    return 0
+  fi
+
+  # Считаем активные fake_tls-секреты для старого домена
+  local incompatible_count=0
+  local first=true
+  while IFS=',' read -r id secret type domain created expires status comment; do
+    if $first; then first=false; continue; fi
+    if [[ "$type" == "fake_tls" && "$domain" == "$old_domain" && "$status" == "active" ]]; then
+      incompatible_count=$(( incompatible_count + 1 ))
+    fi
+  done < "${SECRETS_FILE}"
+
+  if (( incompatible_count > 0 )); then
+    echo ""
+    echo "  ⚠️  Внимание: ${incompatible_count} Fake TLS секрет(ов) несовместимы с новым доменом"
+    echo "     (секрет содержит hex '${old_domain}', новый домен — '${new_domain}')"
+    echo ""
+    echo "  Варианты:"
+    echo "    1. mtpx secret add simple          — домен-независимый секрет (рекомендуется для ротации)"
+    echo "    2. mtpx secret add fake_tls        — новый секрет для '${new_domain}'"
+    echo "    3. Оставить как есть — старые секреты продолжат работать, но"
+    echo "       TLS-обфускация будет показывать '${old_domain}' вместо '${new_domain}'"
+    echo ""
+  fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
