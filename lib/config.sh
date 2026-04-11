@@ -66,38 +66,8 @@ domain_list() {
   cat "${DOMAINS_FILE}"
 }
 
-# ── domain_add — добавить домен в список ─────────────────────────────────────
-# Проверяем валидность домена через validate_domain (util.sh).
-# Проверяем на дубликат (grep -xF — точное совпадение всей строки).
-# Если домен новый — атомарно дописываем в конец файла.
-# ─────────────────────────────────────────────────────────────────────────────
-domain_add() {
-  local domain="$1"
-  validate_domain "$domain"
-  # Проверяем дубликат: -x = вся строка, -F = фиксированная строка (не regex)
-  if [[ -f "${DOMAINS_FILE}" ]] && grep -qxF "$domain" "${DOMAINS_FILE}" 2>/dev/null; then
-    log_warn "Домен '$domain' уже в списке"
-    return 0
-  fi
-  # Атомарно дописываем: копируем содержимое + новая строка
-  local tmp
-  tmp="$(mktemp "${DOMAINS_FILE}.tmp.XXXXXX")"
-  if [[ -f "${DOMAINS_FILE}" ]]; then
-    cat "${DOMAINS_FILE}" > "$tmp"
-  fi
-  printf '%s\n' "$domain" >> "$tmp"
-  mv -f "$tmp" "${DOMAINS_FILE}"
-  log_info "Домен '$domain' добавлен"
-}
-
 # ── domain_set — установить домен как текущий ────────────────────────────────
-# Перемещает указанный домен на первую позицию в файле.
-# Алгоритм:
-#   1. Проверяем, что домен есть в списке (иначе — ошибка)
-#   2. Создаём temp-файл: сначала искомый домен, потом все остальные
-#   3. grep -vxF убирает домен из старой позиции
-# Результат: домен становится текущим (первым), остальные сдвигаются.
-# ─────────────────────────────────────────────────────────────────────────────
+# (Оставлено для обратной совместимости, но не используется в v3)
 domain_set() {
   local domain="$1"
   validate_domain "$domain"
@@ -106,44 +76,15 @@ domain_set() {
     return 1
   fi
   if ! grep -qxF "$domain" "${DOMAINS_FILE}" 2>/dev/null; then
-    log_error "Домен '$domain' не найден в списке. Сначала добавьте: mtpx domain add $domain"
+    log_error "Домен '$domain' не найден в списке."
     return 1
   fi
   local tmp
   tmp="$(mktemp "${DOMAINS_FILE}.tmp.XXXXXX")"
-  # Первым ставим нужный домен
   printf '%s\n' "$domain" > "$tmp"
-  # Затем все остальные (исключая этот домен)
   grep -vxF "$domain" "${DOMAINS_FILE}" >> "$tmp" 2>/dev/null || true
   mv -f "$tmp" "${DOMAINS_FILE}"
   log_info "Текущий домен установлен: $domain"
-}
-
-# ── domain_remove — удалить домен из списка ──────────────────────────────────
-# Защита: нельзя удалить последний домен (минимум 1 должен остаться).
-# grep -vxF — все строки, КРОМЕ удаляемой.
-# ─────────────────────────────────────────────────────────────────────────────
-domain_remove() {
-  local domain="$1"
-  if [[ ! -f "${DOMAINS_FILE}" ]]; then
-    log_error "Файл доменов не найден"
-    return 1
-  fi
-  local count
-  count=$(wc -l < "${DOMAINS_FILE}")
-  if (( count <= 1 )); then
-    log_error "Нельзя удалить единственный домен"
-    return 1
-  fi
-  if ! grep -qxF "$domain" "${DOMAINS_FILE}" 2>/dev/null; then
-    log_error "Домен '$domain' не найден в списке"
-    return 1
-  fi
-  local tmp
-  tmp="$(mktemp "${DOMAINS_FILE}.tmp.XXXXXX")"
-  grep -vxF "$domain" "${DOMAINS_FILE}" > "$tmp" 2>/dev/null || true
-  mv -f "$tmp" "${DOMAINS_FILE}"
-  log_info "Домен '$domain' удалён"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
