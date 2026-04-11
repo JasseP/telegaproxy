@@ -31,8 +31,9 @@ monitor_summary() {
       # Ошибки в логах
       local recent_logs error_count
       recent_logs=$(docker logs --tail 100 "$cname" 2>&1 || true)
-      error_count=$(echo "$recent_logs" | grep -ciE 'error|fatal|crash|segfault|panic' 2>/dev/null || echo "0")
-      if (( error_count > 0 )); then
+      error_count=$(echo "$recent_logs" | grep -ciE 'error|fatal|crash|segfault|panic' 2>/dev/null || true)
+      error_count="${error_count:-0}"
+      if (( error_count + 0 > 0 )); then
         errors="${error_count}"
       fi
 
