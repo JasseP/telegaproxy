@@ -144,17 +144,23 @@ user_remove() {
     return 1
   fi
 
-  local uid
-  uid=$(echo "$line" | cut -d',' -f1)
-
   # Удаляем все контейнеры пользователя
   docker_remove_all_for_user "$username"
 
   # Удаляем секреты
   secrets_remove_for_user "$username"
 
-  # Меняем статус
-  _user_set_field "$uid" "status" "revoked"
+  # Удаляем запись из CSV (физически, не просто revoked)
+  local tmp
+  tmp="$(mktemp "${USERS_FILE}.tmp.XXXXXX")"
+  head -1 "${USERS_FILE}" > "$tmp"
+  tail -n +2 "${USERS_FILE}" | while IFS=',' read -r id uname created status comment; do
+    if [[ "$uname" != "$username" ]]; then
+      printf '%s,%s,%s,%s,%s\n' "$id" "$uname" "$created" "$status" "$comment" >> "$tmp"
+    fi
+  done
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${USERS_FILE}"
 
   log_info "Пользователь '${username}' удалён"
 }
