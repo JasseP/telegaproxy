@@ -58,6 +58,7 @@ google.com  → mtproto-google-com  → alice=ee676f..., bob=ee6770...
 | `mtpx user add <username>` | Создать + секреты для всех доменов |
 | `mtpx user remove <username>` | Удалить + все секреты |
 | `mtpx user list` | Список |
+| `mtpx user show <username> [ip]` | Карточка со ссылками и инструкцией |
 | `mtpx user link <username> [domain]` | Ссылка (все домены или конкретный) |
 | `mtpx user revoke <username>` | Отозвать секреты |
 | `mtpx user rotate <username>` | Перегенерировать секреты |
