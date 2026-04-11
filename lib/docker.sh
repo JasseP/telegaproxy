@@ -231,7 +231,7 @@ docker_remove_all_for_domain() {
 
   docker ps -a --format '{{.Names}}' 2>/dev/null | grep "^${prefix}" | while IFS= read -r cname; do
     docker_remove_container "$cname"
-  done
+  done || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -243,7 +243,7 @@ docker_remove_all_for_user() {
 
   docker ps -a --format '{{.Names}}' 2>/dev/null | grep -- "${suffix}$" | while IFS= read -r cname; do
     docker_remove_container "$cname"
-  done
+  done || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
