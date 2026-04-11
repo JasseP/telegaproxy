@@ -27,8 +27,8 @@ status_full() {
 
   # Контейнеры
   local running total
-  running=$(count_running_proxies 2>/dev/null || echo "0")
-  total=$(count_all_proxies 2>/dev/null || echo "0")
+  running=$(count_running_proxies 2>/dev/null) || running=0
+  total=$(count_all_proxies 2>/dev/null) || total=0
   echo "║  Контейнеры:     ${running}/${total} запущено"
 
   # Домены
@@ -84,8 +84,8 @@ status_full() {
 # ─────────────────────────────────────────────────────────────────────────────
 status_compact() {
   local running total domain_count user_count
-  running=$(count_running_proxies 2>/dev/null || echo "0")
-  total=$(count_all_proxies 2>/dev/null || echo "0")
+  running=$(count_running_proxies 2>/dev/null) || running=0
+  total=$(count_all_proxies 2>/dev/null) || total=0
   domain_count=$(domain_list_raw 2>/dev/null | wc -l)
   user_count=$(active_users 2>/dev/null | wc -l)
 

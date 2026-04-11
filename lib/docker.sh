@@ -249,11 +249,13 @@ docker_remove_all_for_user() {
 # Статистика
 # ─────────────────────────────────────────────────────────────────────────────
 count_running_proxies() {
-  docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^mtproto-' || echo "0"
+  # grep -c всегда выводит число (включая 0), но возвращает exit code 1 при 0
+  # || true предотвращает exit code, а не добавляет ещё один "0"
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^mtproto-' || true
 }
 
 count_all_proxies() {
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -c '^mtproto-' || echo "0"
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -c '^mtproto-' || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
