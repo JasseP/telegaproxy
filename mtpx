@@ -25,6 +25,10 @@ source "${MTPX_ROOT}/lib/docker.sh"
 source "${MTPX_ROOT}/lib/monitor.sh"
 # shellcheck source=lib/status.sh
 source "${MTPX_ROOT}/lib/status.sh"
+# shellcheck source=lib/metrics.sh
+source "${MTPX_ROOT}/lib/metrics.sh"
+# shellcheck source=lib/alerts.sh
+source "${MTPX_ROOT}/lib/alerts.sh"
 # shellcheck source=lib/user.sh
 source "${MTPX_ROOT}/lib/user.sh"
 
@@ -63,6 +67,9 @@ mtpx v4 — MTProto Proxy (один контейнер = один пользов
   user revoke <username>        Отозвать секреты
   user rotate <username>        Перегенерировать секреты
 
+  check alert                   Поиск аномалий (утечка секретов)
+  monitoring <user> <domain> <date> Детальная таблица метрик
+
   secrets clear                 Удалить все секреты
   stop                          Остановить все
   restart                       Перезапустить все
@@ -92,6 +99,7 @@ cmd_init() {
   echo ""
 
   ensure_dirs
+  metrics_init
   domains_init
   users_init
   runtime_init
@@ -356,6 +364,30 @@ cmd_monitor() {
   monitor_summary
 }
 
+cmd_check() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    alert) check_all_alerts ;;
+    *) log_error "Неизвестная подкоманда: check $sub"; echo "  Доступные: alert"; return 1 ;;
+  esac
+}
+
+cmd_monitoring_detail() {
+  local username="${1:-}"
+  local domain="${2:-}"
+  local date="${3:-$(date -u +%Y-%m-%d)}"
+  if [[ -z "$username" ]] || [[ -z "$domain" ]]; then
+    log_error "Использование: mtpx monitoring <user> <domain> [date]"
+    return 1
+  fi
+  monitoring_detail "$username" "$domain" "$date"
+}
+
+cmd_collect() {
+  collect_all_ticks
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -372,6 +404,9 @@ main() {
     domain)    cmd_domain "$@" ;;
     user)      cmd_user "$@" ;;
     secrets)   cmd_secrets "$@" ;;
+    check)     cmd_check "$@" ;;
+    monitoring) cmd_monitoring_detail "$@" ;;
+    collect)   cmd_collect "$@" ;;
     stop)      cmd_stop "$@" ;;
     restart)   cmd_restart "$@" ;;
     monitor)   cmd_monitor "$@" ;;
