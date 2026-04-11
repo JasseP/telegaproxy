@@ -72,15 +72,14 @@ domain_add() {
       fi
     done <<< "$users"
     log_info "Создано контейнеров: ${user_count}"
-  else
-    log_warn "Нет пользователей. Добавьте: mtpx user add <name>"
   fi
 
   # Добавляем домен в список
   add_domain_to_list "$domain"
 
-  echo ""
-  echo "  Все ссылки: mtpx user show <username>"
+  if [[ -z "$users" ]]; then
+    log_info "Домен '${domain}' добавлен (контейнеры создадутся при добавлении пользователей)"
+  fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
