@@ -179,17 +179,24 @@ domain_list() {
     return 0
   fi
 
+  # Считаем домены (исключая строку-заголовок "domain")
+  local domain_count
+  domain_count=$(tail -n +2 "${DOMAINS_FILE}" | grep -c '.' 2>/dev/null || echo "0")
+
+  if (( domain_count == 0 )); then
+    echo "  Нет доменов. Добавьте: mtpx domain add <domain>"
+    return 0
+  fi
+
   echo "┌──────────────────┬──────────────────────┬──────────┬──────┬───────────────────────────────┐"
   echo "│ Домен            │ Контейнер            │ Статус   │ Порт │ Secret                        │"
   echo "├──────────────────┼──────────────────────┼──────────┼──────┼───────────────────────────────┤"
 
-  local has_domains=false
   while IFS= read -r domain || [[ -n "$domain" ]]; do
     domain=$(printf '%s' "$domain" | tr -d '\r')
     [[ -z "$domain" ]] && continue
     [[ "$domain" == "domain" ]] && continue  # пропуск заголовка
 
-    has_domains=true
     local cname cstatus port masked_secret
 
     cname=$(container_name_for_domain "$domain") || cname="unknown"
@@ -202,10 +209,6 @@ domain_list() {
   done < "${DOMAINS_FILE}"
 
   echo "└──────────────────┴──────────────────────┴──────────┴──────┴───────────────────────────────┘"
-
-  if ! $has_domains; then
-    echo "  Нет доменов. Добавьте: mtpx domain add <domain>"
-  fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
