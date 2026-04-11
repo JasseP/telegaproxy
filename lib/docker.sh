@@ -241,7 +241,7 @@ docker_remove_all_for_user() {
   local username="$1"
   local suffix="-${username}"
 
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep "${suffix}$" | while IFS= read -r cname; do
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -- "${suffix}$" | while IFS= read -r cname; do
     docker_remove_container "$cname"
   done
 }
