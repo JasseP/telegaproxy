@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
 ###############################################################################
-# lib/user.sh — управление пользователями (v3: multi-user)
+# lib/user.sh — управление пользователями (v4: один контейнер = один пользователь)
 #
-# Архитектура:
-#   Каждый пользователь получает уникальный секрет для каждого домена.
-#   Один контейнер на домен (alexbers/mtprotoproxy), конфиг содержит все секреты.
-#
-#   ya.ru       → mtproto-ya-ru       → secrets: user1=ee7961..., user2=ee7962...
-#   google.com  → mtproto-google-com  → secrets: user1=ee676f..., user2=ee6770...
-#
-# Формат users.csv: id,username,created_at,status,comment
-# Формат secrets.csv: id,secret,type,domain,user_id,created_at,expires_at,status,comment
+# При добавлении пользователя — создаются контейнеры для всех доменов.
+# При удалении — удаляются все контейнеры пользователя.
 ###############################################################################
 set -euo pipefail
 
@@ -20,11 +13,12 @@ source "${MTPX_ROOT}/lib/util.sh"
 source "${MTPX_ROOT}/lib/config.sh"
 # shellcheck source=lib/secret.sh
 source "${MTPX_ROOT}/lib/secret.sh"
+# shellcheck source=lib/docker.sh
+source "${MTPX_ROOT}/lib/docker.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Инициализация
 # ─────────────────────────────────────────────────────────────────────────────
-
 users_init() {
   if [[ ! -f "${USERS_FILE}" ]]; then
     atomic_write "${USERS_FILE}" "id,username,created_at,status,comment"
@@ -33,9 +27,8 @@ users_init() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Утилиты CSV пользователей
+# Утилиты
 # ─────────────────────────────────────────────────────────────────────────────
-
 _user_id() {
   printf 'u_%s' "$(date +%s)_$$"
 }
@@ -47,28 +40,22 @@ _users_check() {
   fi
 }
 
-# Количество пользователей (без заголовка)
 user_count() {
   _users_check || return 1
-  local total
-  total=$(tail -n +2 "${USERS_FILE}" | wc -l)
-  echo "$total"
+  tail -n +2 "${USERS_FILE}" | wc -l
 }
 
-# Активные пользователи
 active_users() {
   _users_check || return 1
   tail -n +2 "${USERS_FILE}" | awk -F',' '$4=="active"'
 }
 
-# Найти пользователя по username
 user_find() {
   _users_check || return 1
   local username="$1"
   tail -n +2 "${USERS_FILE}" | awk -F',' -v u="$username" '$2==u'
 }
 
-# Получить ID пользователя по username
 user_get_id() {
   local line
   line=$(user_find "$1")
@@ -78,27 +65,17 @@ user_get_id() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# user_add — создать пользователя + секреты для всех доменов
-# ─────────────────────────────────────────────────────────────────────────────
-# user_add <username> [comment]
-#
-# Что делает:
-#   1. Создаёт запись в users.csv
-#   2. Для каждого домена из domains.txt генерирует Fake TLS секрет
-#   3. Сохраняет секреты в secrets.csv с привязкой user_id + domain
-#   4. Перегенерирует конфиг прокси для всех доменов (docker_config_sync)
-#   5. Перезапускает контейнеры (чтобы подхватить новые секреты)
+# user_add — создать пользователя + контейнеры для всех доменов
 # ─────────────────────────────────────────────────────────────────────────────
 user_add() {
   local username="$1"
   local comment="${2:-}"
 
   if [[ -z "$username" ]]; then
-    log_error "Укажите имя пользователя: mtpx user add <username>"
+    log_error "Укажите имя: mtpx user add <username>"
     return 1
   fi
 
-  # Проверка: нет ли уже такого
   if [[ -n "$(user_find "$username")" ]]; then
     log_warn "Пользователь '${username}' уже существует"
     return 0
@@ -118,20 +95,36 @@ user_add() {
 
   log_info "Пользователь '${username}' создан (id: ${uid})"
 
-  # Генерируем секреты для всех доменов
+  # Создаём секреты и контейнеры для всех доменов
   if [[ -f "${DOMAINS_FILE}" ]]; then
     local domain_count=0
+    local current_port=443
     while IFS= read -r domain || [[ -n "$domain" ]]; do
       domain=$(printf '%s' "$domain" | tr -d '\r')
       [[ -z "$domain" ]] && continue
       [[ "$domain" == "domain" ]] && continue
 
-      domain_count=$(( domain_count + 1 ))
-      _create_secret_for_user "$uid" "$username" "$domain"
+      # Создаём секрет
+      secret_add_for "$domain" "$username" "auto-created by user add"
+
+      # Получаем секрет
+      local secret
+      secret=$(secret_for_user_domain "$username" "$domain")
+      if [[ -n "$secret" ]]; then
+        local port
+        port=$(find_free_port "$current_port" 8443 8444 8445 8446 8447 8448 8449 8450) || {
+          log_error "Нет свободных портов"
+          return 1
+        }
+        current_port=$(( port + 1 ))
+
+        docker_start_container "$domain" "$username" "$secret" "$port"
+        domain_count=$(( domain_count + 1 ))
+      fi
     done < "${DOMAINS_FILE}"
 
     if (( domain_count > 0 )); then
-      log_info "Создано секретов для ${domain_count} домен(ов)"
+      log_info "Создано контейнеров: ${domain_count}"
     else
       log_warn "Нет доменов. Секреты будут созданы при добавлении домена."
     fi
@@ -139,16 +132,7 @@ user_add() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# user_remove — удалить пользователя + все секреты
-# ─────────────────────────────────────────────────────────────────────────────
-# user_remove <username>
-#
-# Что делает:
-#   1. Находит все секреты пользователя
-#   2. Отзывает их (status → revoked)
-#   3. Меняет статус пользователя на revoked
-#   4. Перегенерирует конфиги прокси
-#   5. Перезапускает контейнеры
+# user_remove — удалить пользователя + все контейнеры + секреты
 # ─────────────────────────────────────────────────────────────────────────────
 user_remove() {
   local username="$1"
@@ -163,22 +147,20 @@ user_remove() {
   local uid
   uid=$(echo "$line" | cut -d',' -f1)
 
-  # Отзываем все секреты пользователя
-  local secret_count
-  secret_count=$(secrets_count_for_user "$uid")
-  if (( secret_count > 0 )); then
-    secrets_revoke_user "$uid"
-    log_info "Отозвано секретов: ${secret_count}"
-  fi
+  # Удаляем все контейнеры пользователя
+  docker_remove_all_for_user "$username"
 
-  # Меняем статус пользователя
+  # Удаляем секреты
+  secrets_remove_for_user "$username"
+
+  # Меняем статус
   _user_set_field "$uid" "status" "revoked"
 
   log_info "Пользователь '${username}' удалён"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# user_list — список всех пользователей
+# user_list
 # ─────────────────────────────────────────────────────────────────────────────
 user_list() {
   _users_check || return 1
@@ -190,11 +172,8 @@ user_list() {
   local first=true
   while IFS=',' read -r id username created status comment; do
     if $first; then first=false; continue; fi
-
-    # Считаем активные домены пользователя
     local domains
-    domains=$(secrets_count_for_user_active_domains "$id" 2>/dev/null || echo "0")
-
+    domains=$(user_domain_count "$username" 2>/dev/null || echo "0")
     printf "│ %-4s │ %-16s │ %-10s │ %-8s │ %-8s │\n" \
       "$id" "$username" "${created:0:10}" "$status" "$domains"
   done < "${USERS_FILE}"
@@ -203,49 +182,7 @@ user_list() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# user_link — ссылка для пользователя (все домены или конкретный)
-# ─────────────────────────────────────────────────────────────────────────────
-user_link() {
-  local username="$1"
-  local domain="${2:-}"
-  local server="${3:-}"
-
-  local line
-  line=$(user_find "$username")
-  if [[ -z "$line" ]]; then
-    log_error "Пользователь '${username}' не найден"
-    return 1
-  fi
-
-  local uid
-  uid=$(echo "$line" | cut -d',' -f1)
-
-  if [[ -z "$server" ]]; then
-    server=$(get_server_ip)
-  fi
-
-  if [[ -n "$domain" ]]; then
-    # Ссылка для конкретного домена
-    local secret port
-    secret=$(secrets_active_for_user_domain "$uid" "$domain")
-    if [[ -z "$secret" ]]; then
-      log_error "Нет секрета для пользователя '${username}' на домене '${domain}'"
-      return 1
-    fi
-    local cname
-    cname=$(container_name_for_domain "$domain")
-    port=$(docker_container_port "$cname" 2>/dev/null || echo "$DEFAULT_PORT")
-    printf 'tg://proxy?server=%s&port=%s&secret=%s\n' "$server" "$port" "$secret"
-  else
-    # Все ссылки
-    domain_links_for_user "$uid" "$server"
-  fi
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# user_show — подробная информация о пользователе с ссылками для всех доменов
-# ─────────────────────────────────────────────────────────────────────────────
-# user_show <username> [server_ip]
+# user_show — карточка пользователя со всеми ссылками
 # ─────────────────────────────────────────────────────────────────────────────
 user_show() {
   local username="$1"
@@ -290,11 +227,11 @@ user_show() {
     [[ "$domain" == "domain" ]] && continue
 
     local secret
-    secret=$(secrets_active_for_user_domain "$uid" "$domain" 2>/dev/null || echo "")
+    secret=$(secret_for_user_domain "$username" "$domain" 2>/dev/null || echo "")
     [[ -z "$secret" ]] && continue
 
     local cname port
-    cname=$(container_name_for_domain "$domain")
+    cname=$(container_name_for "$domain" "$username")
     port=$(docker_container_port "$cname" 2>/dev/null || echo "$DEFAULT_PORT")
 
     found=$(( found + 1 ))
@@ -318,7 +255,7 @@ user_show() {
     return 0
   fi
 
-  # Инструкция по подключению
+  # Инструкция
   echo ""
   echo "╔═════════════════════════════════════════════╗"
   echo "║  Как подключить прокси в Telegram           ║"
@@ -335,19 +272,16 @@ user_show() {
   echo "║  1. Настройки → Данные и память"
   echo "║  2. Прокси-сервер → Использовать прокси"
   echo "║  3. Добавить прокси → MTProto"
-  echo "║  4. Введите IP, Port, Secret из карточки"
-  echo "║     выше"
+  echo "║  4. Введите IP, Port, Secret"
   echo "║"
   echo "║  Вручную (iOS):"
   echo "║  1. Настройки → Данные и память"
   echo "║  2. Настройки прокси → Включить"
   echo "║  3. Добавить прокси → MTProto"
-  echo "║  4. Введите данные из карточки"
+  echo "║  4. Введите данные"
   echo "║"
   echo "║  🖥 Десктоп (Windows / macOS / Linux):"
   echo "║  1. Кликните по ссылке tg://proxy?..."
-  echo "║     — Telegram Desktop откроется и"
-  echo "║     предложит подключить прокси"
   echo "║  2. Нажмите «Подключить»"
   echo "║"
   echo "║  Вручную (Desktop):"
@@ -360,10 +294,45 @@ user_show() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# domain_links_for_user — все ссылки пользователя
+# user_link — ссылка для пользователя
+# ─────────────────────────────────────────────────────────────────────────────
+user_link() {
+  local username="$1"
+  local domain="${2:-}"
+  local server="${3:-}"
+
+  local line
+  line=$(user_find "$username")
+  if [[ -z "$line" ]]; then
+    log_error "Пользователь '${username}' не найден"
+    return 1
+  fi
+
+  if [[ -z "$server" ]]; then
+    server=$(get_server_ip)
+  fi
+
+  if [[ -n "$domain" ]]; then
+    local secret
+    secret=$(secret_for_user_domain "$username" "$domain")
+    if [[ -z "$secret" ]]; then
+      log_error "Нет секрета для '${username}' на домене '${domain}'"
+      return 1
+    fi
+    local cname port
+    cname=$(container_name_for "$domain" "$username")
+    port=$(docker_container_port "$cname" 2>/dev/null || echo "$DEFAULT_PORT")
+    printf 'tg://proxy?server=%s&port=%s&secret=%s\n' "$server" "$port" "$secret"
+  else
+    domain_links_for_user "$username" "$server"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# domain_links_for_user
 # ─────────────────────────────────────────────────────────────────────────────
 domain_links_for_user() {
-  local uid="$1"
+  local username="$1"
   local server="${2:-}"
   if [[ -z "$server" ]]; then
     server=$(get_server_ip)
@@ -380,12 +349,12 @@ domain_links_for_user() {
     [[ -z "$domain" ]] && continue
     [[ "$domain" == "domain" ]] && continue
 
-    local secret port
-    secret=$(secrets_active_for_user_domain "$uid" "$domain")
+    local secret
+    secret=$(secret_for_user_domain "$username" "$domain")
     [[ -z "$secret" ]] && continue
 
-    local cname
-    cname=$(container_name_for_domain "$domain")
+    local cname port
+    cname=$(container_name_for "$domain" "$username")
     port=$(docker_container_port "$cname" 2>/dev/null || echo "$DEFAULT_PORT")
 
     echo "  ${domain}:"
@@ -400,7 +369,7 @@ domain_links_for_user() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# user_revoke — отозвать все секреты пользователя (без удаления)
+# user_revoke
 # ─────────────────────────────────────────────────────────────────────────────
 user_revoke() {
   local username="$1"
@@ -412,21 +381,21 @@ user_revoke() {
     return 1
   fi
 
-  local uid
-  uid=$(echo "$line" | cut -d',' -f1)
+  local count=0
+  secrets_for_user "$username" 2>/dev/null | while IFS=',' read -r domain secret; do
+    [[ -z "$secret" ]] && continue
+    secrets_revoke_user_domain "$username" "$domain"
+    local cname
+    cname=$(container_name_for "$domain" "$username")
+    docker_remove_container "$cname"
+    count=$(( count + 1 ))
+  done
 
-  local count
-  count=$(secrets_count_for_user "$uid")
-  if (( count > 0 )); then
-    secrets_revoke_user "$uid"
-    log_info "Отозвано ${count} секретов пользователя '${username}'"
-  else
-    log_warn "У пользователя '${username}' нет активных секретов"
-  fi
+  log_info "Секреты пользователя '${username}' отозваны"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# user_rotate — перегенерировать секреты пользователя
+# user_rotate
 # ─────────────────────────────────────────────────────────────────────────────
 user_rotate() {
   local username="$1"
@@ -438,15 +407,8 @@ user_rotate() {
     return 1
   fi
 
-  local uid
-  uid=$(echo "$line" | cut -d',' -f1)
-
   log_step "Перегенерация секретов для '${username}'..."
 
-  # Отзываем старые
-  secrets_revoke_user "$uid"
-
-  # Создаём новые для всех доменов
   local domain_count=0
   if [[ -f "${DOMAINS_FILE}" ]]; then
     while IFS= read -r domain || [[ -n "$domain" ]]; do
@@ -454,8 +416,22 @@ user_rotate() {
       [[ -z "$domain" ]] && continue
       [[ "$domain" == "domain" ]] && continue
 
-      _create_secret_for_user "$uid" "$username" "$domain"
-      domain_count=$(( domain_count + 1 ))
+      # Отзываем старый
+      secrets_revoke_user_domain "$username" "$domain"
+      local cname
+      cname=$(container_name_for "$domain" "$username")
+      docker_remove_container "$cname"
+
+      # Создаём новый
+      secret_add_for "$domain" "$username" "rotated"
+      local secret
+      secret=$(secret_for_user_domain "$username" "$domain")
+      if [[ -n "$secret" ]]; then
+        local port
+        port=$(find_free_port 443 8443 8444 8445 8446 8447 8448 8449 8450) || return 1
+        docker_start_container "$domain" "$username" "$secret" "$port"
+        domain_count=$(( domain_count + 1 ))
+      fi
     done < "${DOMAINS_FILE}"
   fi
 
@@ -465,37 +441,8 @@ user_rotate() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Внутренние функции
+# Internal
 # ─────────────────────────────────────────────────────────────────────────────
-
-# _create_secret_for_user — создать секрет для пользователя на конкретном домене
-_create_secret_for_user() {
-  local uid="$1"
-  local username="$2"
-  local domain="$3"
-
-  local secret created_at sid
-  secret=$(generate_fake_tls_secret "$domain")
-  created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  sid=$(_secret_id)
-
-  # Проверяем, нет ли уже секрета для этого user+domain
-  local existing
-  existing=$(secrets_active_for_user_domain "$uid" "$domain")
-  if [[ -n "$existing" ]]; then
-    return 0  # уже есть
-  fi
-
-  local tmp
-  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
-  cat "${SECRETS_FILE}" > "$tmp"
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-    "$sid" "$secret" "fake_tls" "$domain" "$uid" "$created_at" "" "active" "user:${username}" >> "$tmp"
-  chmod 600 "$tmp"
-  mv -f "$tmp" "${SECRETS_FILE}"
-}
-
-# _user_set_field — изменить поле пользователя
 _user_set_field() {
   local uid="$1" field="$2" value="$3"
 

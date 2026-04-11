@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ###############################################################################
-# lib/status.sh — сводный статус всей системы MTProxy (v2: multi-proxy)
+# lib/status.sh — сводный статус (v4: один контейнер = один пользователь)
 ###############################################################################
 set -euo pipefail
 
@@ -16,12 +16,12 @@ source "${MTPX_ROOT}/lib/docker.sh"
 source "${MTPX_ROOT}/lib/domain.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# status_full — развёрнутый статус
+# status_full
 # ─────────────────────────────────────────────────────────────────────────────
 status_full() {
   echo ""
   echo "╔═════════════════════════════════════════════╗"
-  echo "║         MTProxy Status (v3: multi-user)     ║"
+  echo "║         MTProxy Status (v4: multi-user)     ║"
   echo "╠═════════════════════════════════════════════╣"
   echo "║"
 
@@ -32,32 +32,27 @@ status_full() {
   echo "║  Контейнеры:     ${running}/${total} запущено"
 
   # Домены
-  local domain_count
+  local domain_count=0
   if [[ -f "${DOMAINS_FILE}" ]]; then
     domain_count=$(domain_list_raw 2>/dev/null | wc -l)
-  else
-    domain_count=0
   fi
   echo "║  Доменов:        ${domain_count}"
 
-  # Секреты
-  local secret_total
-  secret_total=$(secret_count 2>/dev/null || echo "0")
-  echo "║  Секретов:       ${secret_total}"
+  # Пользователи
+  local user_count=0
+  if [[ -f "${USERS_FILE}" ]]; then
+    user_count=$(active_users 2>/dev/null | wc -l)
+  fi
+  echo "║  Пользователей:  ${user_count}"
 
-  # Список доменов
+  # Список контейнеров
   echo "║"
-  if [[ -f "${DOMAINS_FILE}" ]] && (( domain_count > 0 )); then
-    echo "║  Домены:"
-    while IFS= read -r domain || [[ -n "$domain" ]]; do
-      domain=$(printf '%s' "$domain" | tr -d '\r')
-      [[ -z "$domain" ]] && continue
-      [[ "$domain" == "domain" ]] && continue
-
-      local cname cstatus port
-      cname=$(container_name_for_domain "$domain")
+  if (( total > 0 )); then
+    echo "║  Контейнеры:"
+    docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^mtproto-' | while IFS= read -r cname; do
+      local cstatus port
       cstatus=$(docker_container_status "$cname")
-      port=$(docker_container_port "$cname" || echo "-")
+      port=$(docker_container_port "$cname" 2>/dev/null || echo "-")
 
       local icon
       case "$cstatus" in
@@ -66,10 +61,18 @@ status_full() {
         none)    icon="🔴" ;;
       esac
 
-      printf "║    %s %-18s %-8s port=%s\n" "$icon" "$domain" "$cstatus" "$port"
-    done < "${DOMAINS_FILE}"
+      # Извлекаем домен и пользователя из имени
+      # mtproto-ya-ru-alice → domain=ya.ru, user=alice
+      local rest="${cname#mtproto-}"
+      local user="${rest##*-}"
+      local domain_norm="${rest%-*}"
+      # domain_norm = ya-ru → ya.ru
+      local domain="${domain_norm//-/.}"
+
+      printf "║    %s %-16s user=%-10s %-8s port=%s\n" "$icon" "$domain" "$user" "$cstatus" "$port"
+    done
   else
-    echo "║  Доменов: нет"
+    echo "║  Контейнеров: нет"
   fi
 
   echo "║"
@@ -77,13 +80,14 @@ status_full() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# status_compact — однострочный статус
+# status_compact
 # ─────────────────────────────────────────────────────────────────────────────
 status_compact() {
-  local running total domain_count
+  local running total domain_count user_count
   running=$(count_running_proxies 2>/dev/null || echo "0")
   total=$(count_all_proxies 2>/dev/null || echo "0")
   domain_count=$(domain_list_raw 2>/dev/null | wc -l)
+  user_count=$(active_users 2>/dev/null | wc -l)
 
   local icon
   if (( running == 0 )); then
@@ -94,5 +98,6 @@ status_compact() {
     icon="🟡"
   fi
 
-  printf '%s running=%d/%d domains=%d\n' "$icon" "$running" "$total" "$domain_count"
+  printf '%s running=%d/%d domains=%d users=%d\n' \
+    "$icon" "$running" "$total" "$domain_count" "$user_count"
 }

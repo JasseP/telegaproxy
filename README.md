@@ -1,30 +1,28 @@
-# mtpx — MTProto Proxy (v3: multi-user, multi-domain)
+# mtpx — MTProto Proxy (v4: один контейнер = один пользователь)
 
-CLI-утилита для управления MTProto Proxy с поддержкой **нескольких доменов** и **нескольких пользователей**.
+CLI-утилита для управления MTProto Proxy. Каждый пользователь получает **отдельный контейнер** для каждого домена.
 
 ## Архитектура
 
-Каждый домен = отдельный контейнер (alexbers/mtprotoproxy).
-Каждый пользователь = уникальный секрет для каждого домена.
+```
+ya.ru + alice       → mtproto-ya-ru-alice       → SECRET=ee7961...
+ya.ru + bob         → mtproto-ya-ru-bob         → SECRET=ee7962...
+google.com + alice  → mtproto-google-com-alice  → SECRET=ee676f...
+```
 
-```
-ya.ru       → mtproto-ya-ru       → alice=ee7961..., bob=ee7962...
-google.com  → mtproto-google-com  → alice=ee676f..., bob=ee6770...
-```
+Каждый контейнер — отдельный процесс с одним секретом. Мониторинг, перезапуск и управление — на уровне контейнера.
 
 ## Быстрый старт
 
 ```bash
 ./install.sh
 
-# Или вручную:
+# Или вручную
+chmod +x mtpx
 ./mtpx init
 ./mtpx domain add ya.ru
-./mtpx domain add google.com
 ./mtpx user add alice
-./mtpx user add bob
-./mtpx user link alice      # все ссылки alice
-./mtpx user link bob ya.ru  # ссылка bob для ya.ru
+./mtpx user show alice      # все ссылки alice
 ```
 
 ## Команды
@@ -34,39 +32,39 @@ google.com  → mtproto-google-com  → alice=ee676f..., bob=ee6770...
 | Команда | Описание |
 |---------|----------|
 | `mtpx init` | Инициализация |
-| `mtpx apply [domain]` | Запустить все (или один) |
-| `mtpx status` | Сводка |
+| `mtpx apply` | Применить конфигурацию |
+| `mtpx status` | Сводка состояния |
 | `mtpx doctor` | Диагностика |
-| `mtpx inspect [domain]` | Детали контейнера |
+| `mtpx inspect` | Детали всех контейнеров |
 
 ### Домены
 
 | Команда | Описание |
 |---------|----------|
-| `mtpx domain add <domain>` | Домен + контейнер + секреты для всех пользователей |
-| `mtpx domain remove <domain>` | Удалить домен + контейнер |
+| `mtpx domain add <domain>` | Домен + контейнеры для всех пользователей |
+| `mtpx domain remove <domain>` | Удалить домен + контейнеры |
 | `mtpx domain list` | Все домены |
 | `mtpx domain links` | Все ссылки |
-| `mtpx domain restart <domain>` | Перезапустить |
-| `mtpx domain stop/start <domain>` | Остановить/запустить |
+| `mtpx domain restart/stop/start <domain>` | Управление контейнерами домена |
 | `mtpx domain logs <domain>` | Логи |
 
 ### Пользователи
 
 | Команда | Описание |
 |---------|----------|
-| `mtpx user add <username>` | Создать + секреты для всех доменов |
-| `mtpx user remove <username>` | Удалить + все секреты |
+| `mtpx user add <username>` | Создать пользователя + контейнеры для всех доменов |
+| `mtpx user remove <username>` | Удалить пользователя + контейнеры |
 | `mtpx user list` | Список |
 | `mtpx user show <username> [ip]` | Карточка со ссылками и инструкцией |
-| `mtpx user link <username> [domain]` | Ссылка (все домены или конкретный) |
-| `mtpx user revoke <username>` | Отозвать секреты |
-| `mtpx user rotate <username>` | Перегенерировать секреты |
+| `mtpx user link <username> [domain]` | Ссылка (все или конкретный домен) |
+| `mtpx user revoke <username>` | Отозвать |
+| `mtpx user rotate <username>` | Перегенерировать |
 
 ### Операции
 
 | Команда | Описание |
 |---------|----------|
+| `mtpx secrets clear` | Удалить все секреты |
 | `mtpx stop` | Остановить все |
 | `mtpx restart` | Перезапустить все |
 | `mtpx monitor` | Мониторинг |
@@ -86,20 +84,18 @@ telegaProxy/
 ├── start-mtproxy.sh        # Обёртка
 ├── install.sh              # Установка
 ├── config/
-│   ├── domains.txt         — список доменов
-│   └── proxy-*.py          — конфиги прокси (авто)
+│   └── domains.txt         — список доменов
 ├── state/
 │   ├── users.csv           — пользователи
-│   └── secrets.csv         — секреты (user+domain)
+│   ├── secrets.csv         — секреты (domain+username)
 │   └── runtime.env         — runtime
 └── lib/
     ├── util.sh
     ├── config.sh
-    ├── config_proxy.sh     # Генерация Python-конфигов
     ├── secret.sh
     ├── domain.sh
-    ├── docker.sh           # alexbers/mtprotoproxy
-    ├── user.sh             # CRUD пользователей
+    ├── docker.sh           # telegrammessenger/proxy
+    ├── user.sh
     ├── monitor.sh
     └── status.sh
 ```

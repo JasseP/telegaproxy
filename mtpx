@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
 ###############################################################################
-# mtpx — CLI-утилита для управления MTProto Proxy (v2: multi-proxy)
+# mtpx — CLI-утилита для управления MTProto Proxy (v4: один контейнер = один пользователь)
 #
-# Архитектура: каждый домен = отдельный контейнер со своим секретом.
-# Пользователи получают разные ссылки для разных доменов.
-#
-#   ya.ru       → mtproto-ya-ru       → SECRET=ee79612e7275...
-#   google.com  → mtproto-google-com  → SECRET=ee676f6f676c...
-#   cloud.com   → mtproto-cloud-com   → SECRET=ee636c6f7564...
+# Архитектура: каждый пользователь = отдельный контейнер для каждого домена.
+# ya.ru + alice → mtproto-ya-ru-alice → SECRET=ee79612e7275...
+# ya.ru + bob   → mtproto-ya-ru-bob   → SECRET=ee79612e7275...
 ###############################################################################
 set -euo pipefail
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Определяем корень проекта и загружаем модули
-# ─────────────────────────────────────────────────────────────────────────────
 MTPX_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 export MTPX_ROOT
 
@@ -33,45 +27,43 @@ source "${MTPX_ROOT}/lib/monitor.sh"
 source "${MTPX_ROOT}/lib/status.sh"
 # shellcheck source=lib/user.sh
 source "${MTPX_ROOT}/lib/user.sh"
-# shellcheck source=lib/config_proxy.sh
-source "${MTPX_ROOT}/lib/config_proxy.sh"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# usage — справка
+# usage
 # ─────────────────────────────────────────────────────────────────────────────
 usage() {
   cat <<'EOF'
-mtpx v3 — MTProto Proxy (multi-user, multi-domain)
+mtpx v4 — MTProto Proxy (один контейнер = один пользователь)
 
 Использование:
   mtpx <command> [subcommand] [args...]
 
 Команды:
-  init                          Инициализация проекта
-  apply [domain]                Запустить все домены (или один)
+  init                          Инициализация
+  apply                         Запустить все контейнеры
   status                        Сводка состояния
   doctor                        Диагностика
-  inspect [domain]              Детали контейнера
+  inspect                       Детали всех контейнеров
 
-  domain add <domain>           Создать домен + контейнер + секреты
-  domain remove <domain>        Удалить домен + контейнер
+  domain add <domain>           Создать домен + контейнеры для всех пользователей
+  domain remove <domain>        Удалить домен + все контейнеры
   domain list                   Все домены
-  domain links                  Все ссылки
-  domain restart <domain>       Перезапустить контейнер
-  domain stop <domain>          Остановить контейнер
-  domain start <domain>         Запустить контейнер
-  domain logs <domain> [n]      Логи
+  domain links                  Все ссылки (все пользователи, все домены)
+  domain restart <domain>       Перезапустить все контейнеры домена
+  domain stop <domain>          Остановить все контейнеры домена
+  domain start <domain>         Запустить все контейнеры домена
+  domain logs <domain> [n]      Логи всех контейнеров домена
 
-  user add <username>           Создать пользователя + секреты для всех доменов
-  user remove <username>        Удалить пользователя + все секреты
+  user add <username>           Создать пользователя + контейнеры для всех доменов
+  user remove <username>        Удалить пользователя + все контейнеры
   user list                     Список пользователей
-  user show <username> [ip]       Карточка пользователя (ip — если авто-определение неверна)
-  user link <username> [domain] Ссылка tg:// (все домены или конкретный)
+  user show <username> [ip]     Карточка пользователя со ссылками
+  user link <username> [domain] Ссылка tg://
   user links <username>         Все ссылки пользователя
-  user revoke <username>        Отозвать секреты (без удаления)
+  user revoke <username>        Отозвать секреты
   user rotate <username>        Перегенерировать секреты
 
-  secrets clear                 Удалить все секреты (полная очистка)
+  secrets clear                 Удалить все секреты
   stop                          Остановить все
   restart                       Перезапустить все
   monitor                       Мониторинг
@@ -81,27 +73,22 @@ mtpx v3 — MTProto Proxy (multi-user, multi-domain)
 Примеры:
   mtpx init
   mtpx domain add ya.ru
-  mtpx domain add google.com
   mtpx user add alice
   mtpx user add bob
-  mtpx user link alice        # все ссылки alice
-  mtpx user link alice ya.ru  # ссылка alice для ya.ru
-  mtpx apply
+  mtpx user show alice        # все ссылки alice
+  mtpx domain list            # все домены
 EOF
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# version
-# ─────────────────────────────────────────────────────────────────────────────
 version() {
-  echo "mtpx v3.0.0 (multi-user)"
+  echo "mtpx v4.0.0 (one-container-per-user)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# cmd_init — инициализация проекта
+# Commands
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_init() {
-  log_step "Инициализация mtpx v3..."
+  log_step "Инициализация mtpx v4..."
   echo ""
 
   ensure_dirs
@@ -116,43 +103,30 @@ cmd_init() {
   echo ""
   echo "  Структура:"
   echo "  ├── config/"
-  echo "  │   ├── domains.txt        — список доменов"
-  echo "  │   └── proxy-*.py         — конфиги прокси (автоматические)"
+  echo "  │   └── domains.txt        — список доменов"
   echo "  ├── state/"
   echo "  │   ├── users.csv          — пользователи"
-  echo "  │   └── secrets.csv        — секреты (user+domain)"
-  echo "  │   └── runtime.env        — runtime параметры"
+  echo "  │   ├── secrets.csv        — секреты"
+  echo "  │   └── runtime.env        — runtime"
   echo "  └── lib/                    — модули"
   echo ""
   echo "  Следующие шаги:"
   echo "  1. mtpx domain add ya.ru      — создать домен"
   echo "  2. mtpx user add alice        — создать пользователя"
   echo "  3. mtpx user add bob          — ещё одного"
-  echo "  4. mtpx user link alice       — получить ссылки для alice"
+  echo "  4. mtpx user show alice       — получить ссылки"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_apply — запустить все домены (или один конкретный)
-# ─────────────────────────────────────────────────────────────────────────────
 cmd_apply() {
-  local domain="${1:-}"
-  if [[ -n "$domain" ]]; then
-    apply_single "$domain"
-  else
-    apply_all
-  fi
+  log_step "Применение конфигурации..."
+  log_warn "В v4 каждый контейнер создаётся при добавлении пользователя или домена"
+  log_info "Для перезапуска всех: mtpx restart"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_status — сводка состояния
-# ─────────────────────────────────────────────────────────────────────────────
 cmd_status() {
   status_full
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_doctor — диагностика
-# ─────────────────────────────────────────────────────────────────────────────
 cmd_doctor() {
   echo ""
   echo "╔═════════════════════════════════════════════╗"
@@ -161,7 +135,6 @@ cmd_doctor() {
 
   local issues=0
 
-  # Зависимости
   echo "║"
   echo "║  Зависимости:"
   local cmds=(docker openssl xxd curl)
@@ -179,10 +152,9 @@ cmd_doctor() {
     fi
   done
 
-  # Структура
   echo "║"
   echo "║  Структура:"
-  for f in "${DOMAINS_FILE}" "${SECRETS_FILE}" "${RUNTIME_FILE}"; do
+  for f in "${DOMAINS_FILE}" "${USERS_FILE}" "${SECRETS_FILE}" "${RUNTIME_FILE}"; do
     if [[ -f "$f" ]]; then
       printf "║    ✅ %-30s\n" "$(basename "$f")"
     else
@@ -191,7 +163,6 @@ cmd_doctor() {
     fi
   done
 
-  # Docker-контейнеры
   echo "║"
   echo "║  Контейнеры:"
   if command -v docker &>/dev/null; then
@@ -205,21 +176,9 @@ cmd_doctor() {
     issues=$(( issues + 1 ))
   fi
 
-  # Домены
-  echo "║"
-  echo "║  Домены:"
-  if [[ -f "${DOMAINS_FILE}" ]]; then
-    local domain_count
-    domain_count=$(domain_list_raw 2>/dev/null | wc -l)
-    echo "║    В списке:    ${domain_count}"
-  else
-    echo "║    ℹ️  Не инициализированы"
-  fi
-
-  # Права файлов
   echo "║"
   echo "║  Права файлов:"
-  for f in "${SECRETS_FILE}" "${RUNTIME_FILE}"; do
+  for f in "${SECRETS_FILE}" "${USERS_FILE}" "${RUNTIME_FILE}"; do
     if [[ -f "$f" ]]; then
       local perms
       perms=$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || echo "?")
@@ -231,7 +190,6 @@ cmd_doctor() {
     fi
   done
 
-  # Итог
   echo "║"
   if (( issues == 0 )); then
     echo "║  Итог: ✅ Проблем не найдено"
@@ -241,92 +199,35 @@ cmd_doctor() {
   echo "╚═════════════════════════════════════════════╝"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_inspect — детальная информация о контейнере
-# ─────────────────────────────────────────────────────────────────────────────
 cmd_inspect() {
-  local domain="${1:-}"
-
-  if [[ -n "$domain" ]]; then
-    _inspect_single "$domain"
-  else
-    _inspect_all
-  fi
-}
-
-_inspect_single() {
-  local domain="$1"
-  local cname
-  cname=$(container_name_for_domain "$domain")
-
   echo ""
   echo "╔═════════════════════════════════════════════╗"
-  echo "║  mtpx inspect: ${domain}"
+  echo "║  Контейнеры                                 ║"
   echo "╠═════════════════════════════════════════════╣"
 
-  if ! docker_container_exists "$cname"; then
-    echo "║  Контейнер не создан"
-    echo "╚═════════════════════════════════════════════╝"
-    return 0
-  fi
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^mtproto-' | while IFS= read -r cname; do
+    local cstatus port
+    cstatus=$(docker_container_status "$cname")
+    port=$(docker_container_port "$cname" 2>/dev/null || echo "-")
 
-  _inspect_container "$cname" "$domain"
-}
+    echo "║  ${cname}:"
+    echo "║    Статус:  ${cstatus}"
+    echo "║    Порт:    ${port}"
 
-_inspect_all() {
-  if [[ ! -f "${DOMAINS_FILE}" ]]; then
-    echo "  Нет доменов"
-    return 0
-  fi
-
-  local first=true
-  while IFS= read -r domain || [[ -n "$domain" ]]; do
-    domain=$(printf '%s' "$domain" | tr -d '\r')
-    [[ -z "$domain" ]] && continue
-    [[ "$domain" == "domain" ]] && continue
-
-    if $first; then first=false; else echo ""; fi
-    _inspect_single "$domain"
-  done < "${DOMAINS_FILE}"
-}
-
-_inspect_container() {
-  local cname="$1" domain="$2"
-
-  local info state started image
-  info=$(docker inspect "$cname" 2>/dev/null || echo "{}")
-  state=$(echo "$info" | grep -oP '"Status":\s*"\K[^"]+' | head -1 || echo "unknown")
-  started=$(echo "$info" | grep -oP '"StartedAt":\s*"\K[^"]+' | head -1 || echo "unknown")
-  image=$(echo "$info" | grep -oP '"Image":\s*"\K[^"]+' | head -1 || echo "unknown")
-
-  echo "║  Контейнер:     ${cname}"
-  echo "║  Состояние:     ${state}"
-  echo "║  Запущен:       ${started}"
-  echo "║  Образ:         ${image}"
-
-  # Порты
-  local port
-  port=$(docker_container_port "$cname" || echo "-")
-  echo "║  Порт:          ${port}"
-
-  # Секрет
-  local masked
-  masked=$(secrets_masked_for_domain "$domain" || echo "-")
-  echo "║  Secret:        ${masked}"
-
-  # Логи
-  echo "║  Последние логи:"
-  local logs
-  logs=$(docker logs --tail 3 "$cname" 2>&1 || echo "нет логов")
-  echo "$logs" | while IFS= read -r line; do
-    printf "║    %s\n" "${line:0:55}"
+    # Логи (последние 2 строки)
+    local logs
+    logs=$(docker logs --tail 2 "$cname" 2>&1 || echo "нет логов")
+    echo "$logs" | while IFS= read -r line; do
+      printf "║    %s\n" "${line:0:55}"
+    done
+    echo "║"
   done
 
   echo "╚═════════════════════════════════════════════╝"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# cmd_domain — диспетчер подкоманд domain
+# Dispatchers
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_domain() {
   local sub="${1:-}"
@@ -335,20 +236,14 @@ cmd_domain() {
   case "$sub" in
     add)
       [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain add <domain>"; return 1; }
-      add_domain_to_list "$1"
       domain_add "$@"
       ;;
     remove|rm)
       [[ $# -gt 0 ]] || { log_error "Укажите домен: mtpx domain remove <domain>"; return 1; }
       domain_remove "$1"
-      remove_domain_from_list "$1"
       ;;
     list|ls)
       domain_list
-      ;;
-    link)
-      log_error "Используйте: mtpx user link <username> [domain]"
-      return 1
       ;;
     links)
       domain_links_all "$@"
@@ -377,9 +272,6 @@ cmd_domain() {
   esac
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_user — диспетчер подкоманд user
-# ─────────────────────────────────────────────────────────────────────────────
 cmd_user() {
   local sub="${1:-}"
   shift || true
@@ -388,16 +280,10 @@ cmd_user() {
     add)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user add <username>"; return 1; }
       user_add "$@"
-      # После добавления пользователя — перезапускаем контейнеры
-      if [[ -f "${DOMAINS_FILE}" ]]; then
-        docker_config_sync_all
-      fi
       ;;
     remove|rm)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user remove <username>"; return 1; }
       user_remove "$1"
-      # После удаления — перезапускаем контейнеры
-      docker_config_sync_all
       ;;
     list|ls)
       user_list
@@ -412,50 +298,24 @@ cmd_user() {
       ;;
     links)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user links <username>"; return 1; }
-      domain_links_for_user "$(user_get_id "$1")"
+      domain_links_for_user "$1"
       ;;
     revoke)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user revoke <username>"; return 1; }
       user_revoke "$1"
-      docker_config_sync_all
       ;;
     rotate)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user rotate <username>"; return 1; }
       user_rotate "$1"
-      docker_config_sync_all
       ;;
     *)
       log_error "Неизвестная подкоманда: user $sub"
-      echo "  Доступные: add, remove, list, link, links, revoke, rotate"
+      echo "  Доступные: add, remove, list, show, link, links, revoke, rotate"
       return 1
       ;;
   esac
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_stop — остановить все прокси
-# ─────────────────────────────────────────────────────────────────────────────
-cmd_stop() {
-  stop_all
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_restart — перезапустить все прокси
-# ─────────────────────────────────────────────────────────────────────────────
-cmd_restart() {
-  restart_all
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_monitor — эвристический мониторинг
-# ─────────────────────────────────────────────────────────────────────────────
-cmd_monitor() {
-  monitor_summary
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# cmd_secrets — управление секретами
-# ─────────────────────────────────────────────────────────────────────────────
 cmd_secrets() {
   local sub="${1:-}"
   shift || true
@@ -473,7 +333,7 @@ cmd_secrets() {
         return 0
       fi
       log_step "Удаление всех секретов (${count} записей)..."
-      atomic_write "${SECRETS_FILE}" "id,secret,type,domain,user_id,created_at,expires_at,status,comment"
+      atomic_write "${SECRETS_FILE}" "id,secret,type,domain,username,created_at,expires_at,status,comment"
       log_info "Все секреты удалены"
       ;;
     *)
@@ -484,8 +344,20 @@ cmd_secrets() {
   esac
 }
 
+cmd_stop() {
+  stop_all
+}
+
+cmd_restart() {
+  restart_all
+}
+
+cmd_monitor() {
+  monitor_summary
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
-# main — диспетчер команд
+# main
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
   local cmd="${1:-help}"
