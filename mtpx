@@ -70,7 +70,6 @@ mtpx v3 — MTProto Proxy (multi-user, multi-domain)
   user revoke <username>        Отозвать секреты (без удаления)
   user rotate <username>        Перегенерировать секреты
 
-  migrate                       Миграция данных (v2→v3)
   secrets clear                 Удалить все секреты (полная очистка)
   stop                          Остановить все
   restart                       Перезапустить все
@@ -450,15 +449,6 @@ cmd_monitor() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# cmd_migrate — миграция данных
-# ─────────────────────────────────────────────────────────────────────────────
-cmd_migrate() {
-  log_step "Миграция данных..."
-  migrate_secrets
-  log_info "Миграция завершена"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # cmd_secrets — управление секретами
 # ─────────────────────────────────────────────────────────────────────────────
 cmd_secrets() {
@@ -504,7 +494,6 @@ main() {
     inspect)   cmd_inspect "$@" ;;
     domain)    cmd_domain "$@" ;;
     user)      cmd_user "$@" ;;
-    migrate)   cmd_migrate "$@" ;;
     secrets)   cmd_secrets "$@" ;;
     stop)      cmd_stop "$@" ;;
     restart)   cmd_restart "$@" ;;

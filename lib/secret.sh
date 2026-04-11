@@ -20,44 +20,7 @@ secrets_init() {
   if [[ ! -f "${SECRETS_FILE}" ]]; then
     atomic_write "${SECRETS_FILE}" "id,secret,type,domain,user_id,created_at,expires_at,status,comment"
     log_info "Создан ${SECRETS_FILE}"
-    return 0
   fi
-
-  # Всегда пытаcь мигрировать (idempotent)
-  _secrets_migrate_v2_v3
-}
-
-# ── Миграция v2 → v3: добавить колонку user_id ────────────────────────────
-_secrets_migrate_v2_v3() {
-  # Проверяем первую строку данных
-  local first_data
-  first_data=$(tail -n +2 "${SECRETS_FILE}" | head -1)
-  [[ -z "$first_data" ]] && return 0
-
-  local field_count
-  field_count=$(echo "$first_data" | awk -F',' '{print NF}')
-
-  if [[ "$field_count" == "8" ]]; then
-    log_info "Миграция секретов: v2 → v3 (добавление user_id)..."
-    local tmp
-    tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
-    echo "id,secret,type,domain,user_id,created_at,expires_at,status,comment" > "$tmp"
-    # Вставляем пустой user_id между domain(4) и created_at(5)
-    tail -n +2 "${SECRETS_FILE}" | while IFS= read -r line; do
-      # Заменяем только первую запятую после 4-го поля на ",,"
-      echo "$line" | awk -F',' '{
-        printf "%s,%s,%s,%s,,%s,%s,%s,%s\n", $1,$2,$3,$4,$5,$6,$7,$8
-      }' >> "$tmp"
-    done
-    chmod 600 "$tmp"
-    mv -f "$tmp" "${SECRETS_FILE}"
-    log_info "Миграция завершена"
-  fi
-}
-
-# ── migrate_secrets — публичная команда миграции ────────────────────────────
-migrate_secrets() {
-  _secrets_migrate_v2_v3
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

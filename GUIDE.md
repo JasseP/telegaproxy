@@ -317,9 +317,6 @@ cd /root/telegaproxy
 git pull
 chmod +x mtpx
 
-# Если были изменения в структуре данных
-mtpx migrate
-
 # Перезапустить
 mtpx apply
 ```
@@ -424,7 +421,6 @@ mtpx monitor
 | Команда | Описание |
 |---------|----------|
 | `mtpx secrets clear` | Удалить все секреты |
-| `mtpx migrate` | Миграция v2→v3 |
 | `mtpx stop` | Остановить все |
 | `mtpx restart` | Перезапустить все |
 
