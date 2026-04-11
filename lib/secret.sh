@@ -124,20 +124,44 @@ secret_add_for() {
 secrets_revoke_for_domain() {
   _secrets_check || return 1
   local domain="$1"
-  _secrets_set_field_where '$4==d' "d=$domain" "status" "revoked"
+  local tmp
+  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
+  head -1 "${SECRETS_FILE}" > "$tmp"
+  tail -n +2 "${SECRETS_FILE}" | awk -F',' -v d="$domain" '{
+    if ($4==d) $8="revoked"
+    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n", $1,$2,$3,$4,$5,$6,$7,$8,$9
+  }' >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${SECRETS_FILE}"
 }
 
 secrets_revoke_for_user() {
   _secrets_check || return 1
   local username="$1"
-  _secrets_set_field_where '$5==u' "u=$username" "status" "revoked"
+  local tmp
+  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
+  head -1 "${SECRETS_FILE}" > "$tmp"
+  tail -n +2 "${SECRETS_FILE}" | awk -F',' -v u="$username" '{
+    if ($5==u) $8="revoked"
+    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n", $1,$2,$3,$4,$5,$6,$7,$8,$9
+  }' >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${SECRETS_FILE}"
 }
 
 secrets_revoke_user_domain() {
   _secrets_check || return 1
   local username="$1"
   local domain="$2"
-  _secrets_set_field_where '$4==d && $5==u' "d=$domain,u=$username" "status" "revoked"
+  local tmp
+  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
+  head -1 "${SECRETS_FILE}" > "$tmp"
+  tail -n +2 "${SECRETS_FILE}" | awk -F',' -v u="$username" -v d="$domain" '{
+    if ($4==d && $5==u) $8="revoked"
+    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n", $1,$2,$3,$4,$5,$6,$7,$8,$9
+  }' >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${SECRETS_FILE}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -146,62 +170,21 @@ secrets_revoke_user_domain() {
 secrets_remove_for_domain() {
   _secrets_check || return 1
   local domain="$1"
-  _secrets_remove_where '$4!=d' "d=$domain"
+  local tmp
+  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
+  head -1 "${SECRETS_FILE}" > "$tmp"
+  tail -n +2 "${SECRETS_FILE}" | awk -F',' -v d="$domain" '$4 != d' >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${SECRETS_FILE}"
 }
 
 secrets_remove_for_user() {
   _secrets_check || return 1
   local username="$1"
-  _secrets_remove_where '$5!=u' "u=$username"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Internal helpers
-# ─────────────────────────────────────────────────────────────────────────────
-_secrets_set_field_where() {
-  local condition="$1"
-  local awk_vars="$2"
-  local field="$3"
-  local value="$4"
-
   local tmp
   tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
   head -1 "${SECRETS_FILE}" > "$tmp"
-
-  local first=true
-  while IFS=',' read -r id secret type domain username created expires status comment; do
-    if $first; then first=false; continue; fi
-    # Проверяем условие через awk
-    if echo "$id,$secret,$type,$domain,$username,$created,$expires,$status,$comment" | \
-       awk -F',' "$condition" >/dev/null 2>&1; then
-      case "$field" in
-        id) id="$value" ;; secret) secret="$value" ;; type) type="$value" ;;
-        domain) domain="$value" ;; username) username="$value" ;;
-        created) created="$value" ;; expires) expires="$value" ;;
-        status) status="$value" ;; comment) comment="$value" ;;
-      esac
-    fi
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-      "$id" "$secret" "$type" "$domain" "$username" "$created" "$expires" "$status" "$comment" >> "$tmp"
-  done < "${SECRETS_FILE}"
-
-  chmod 600 "$tmp"
-  mv -f "$tmp" "${SECRETS_FILE}"
-}
-
-_secrets_remove_where() {
-  local condition="$1"
-  local awk_vars="$2"
-
-  local tmp
-  tmp="$(mktemp "${SECRETS_FILE}.tmp.XXXXXX")"
-  head -1 "${SECRETS_FILE}" > "$tmp"
-  # Оставляем только строки, которые НЕ соответствуют условию
-  tail -n +2 "${SECRETS_FILE}" | while IFS= read -r line; do
-    if ! echo "$line" | awk -F',' "$condition" >/dev/null 2>&1; then
-      echo "$line" >> "$tmp"
-    fi
-  done
+  tail -n +2 "${SECRETS_FILE}" | awk -F',' -v u="$username" '$5 != u' >> "$tmp"
   chmod 600 "$tmp"
   mv -f "$tmp" "${SECRETS_FILE}"
 }
