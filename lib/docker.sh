@@ -227,9 +227,8 @@ docker_remove_all_for_domain() {
   local domain="$1"
   local norm
   norm=$(normalize_domain "$domain")
-  local prefix="mtproto-${norm}-"
-
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep "^${prefix}" | while IFS= read -r cname; do
+  # Матчим и v3 стиль (mtproto-ya-ru), и v4 (mtproto-ya-ru-alice)
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep "^mtproto-${norm}" | while IFS= read -r cname; do
     docker_remove_container "$cname"
   done || true
 }
