@@ -65,6 +65,7 @@ mtpx v3 — MTProto Proxy (multi-user, multi-domain)
   user add <username>           Создать пользователя + секреты для всех доменов
   user remove <username>        Удалить пользователя + все секреты
   user list                     Список пользователей
+  user show <username>          Карточка пользователя со всеми ссылками
   user link <username> [domain] Ссылка tg:// (все домены или конкретный)
   user links <username>         Все ссылки пользователя
   user revoke <username>        Отозвать секреты (без удаления)
@@ -400,6 +401,10 @@ cmd_user() {
       ;;
     list|ls)
       user_list
+      ;;
+    show)
+      [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user show <username>"; return 1; }
+      user_show "$1"
       ;;
     link)
       [[ $# -gt 0 ]] || { log_error "Укажите имя: mtpx user link <username>"; return 1; }

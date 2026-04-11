@@ -243,6 +243,116 @@ user_link() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# user_show — подробная информация о пользователе с ссылками для всех доменов
+# ─────────────────────────────────────────────────────────────────────────────
+user_show() {
+  local username="$1"
+
+  local line
+  line=$(user_find "$username")
+  if [[ -z "$line" ]]; then
+    log_error "Пользователь '${username}' не найден"
+    return 1
+  fi
+
+  IFS=',' read -r uid username created status comment <<< "$line"
+
+  echo ""
+  echo "╔═════════════════════════════════════════════╗"
+  echo "║  Пользователь: ${username}"
+  echo "╠═════════════════════════════════════════════╣"
+  echo "║  ID:       ${uid}"
+  echo "║  Created:  ${created}"
+  echo "║  Status:   ${status}"
+  echo "║  Comment:  ${comment:--}"
+  echo "╚═════════════════════════════════════════════╝"
+
+  if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    echo ""
+    echo "  Нет доменов"
+    return 0
+  fi
+
+  local server
+  server=$(get_server_ip)
+
+  local found=0
+  while IFS= read -r domain || [[ -n "$domain" ]]; do
+    domain=$(printf '%s' "$domain" | tr -d '\r')
+    [[ -z "$domain" ]] && continue
+    [[ "$domain" == "domain" ]] && continue
+
+    local secret
+    secret=$(secrets_active_for_user_domain "$uid" "$domain" 2>/dev/null || echo "")
+    [[ -z "$secret" ]] && continue
+
+    local cname port
+    cname=$(container_name_for_domain "$domain")
+    port=$(docker_container_port "$cname" 2>/dev/null || echo "$DEFAULT_PORT")
+
+    found=$(( found + 1 ))
+
+    echo ""
+    echo "┌─────────────────────────────────────────────┐"
+    echo "│  🌐 Домен: ${domain}"
+    echo "├─────────────────────────────────────────────┤"
+    echo "│  Ссылка для подключения:"
+    echo "│  tg://proxy?server=${server}&port=${port}&secret=${secret}"
+    echo "│"
+    echo "│  IP:     ${server}"
+    echo "│  Port:   ${port}"
+    echo "│  Secret: ${secret}"
+    echo "└─────────────────────────────────────────────┘"
+  done < "${DOMAINS_FILE}"
+
+  if (( found == 0 )); then
+    echo ""
+    echo "  ⚠️  Нет активных секретов для пользователя"
+    return 0
+  fi
+
+  # Инструкция по подключению
+  echo ""
+  echo "╔═════════════════════════════════════════════╗"
+  echo "║  Как подключить прокси в Telegram           ║"
+  echo "╠═════════════════════════════════════════════╣"
+  echo "║"
+  echo "║  📱 Мобильная версия (Android / iOS):"
+  echo "║  1. Откройте ссылку tg://proxy?... на"
+  echo "║     устройстве — Telegram откроется"
+  echo "║     автоматически с предложением добавить"
+  echo "║     прокси."
+  echo "║  2. Нажмите «Подключить» / «Connect»"
+  echo "║"
+  echo "║  Вручную (Android):"
+  echo "║  1. Настройки → Данные и память"
+  echo "║  2. Прокси-сервер → Использовать прокси"
+  echo "║  3. Добавить прокси → MTProto"
+  echo "║  4. Введите IP, Port, Secret из карточки"
+  echo "║     выше"
+  echo "║"
+  echo "║  Вручную (iOS):"
+  echo "║  1. Настройки → Данные и память"
+  echo "║  2. Настройки прокси → Включить"
+  echo "║  3. Добавить прокси → MTProto"
+  echo "║  4. Введите данные из карточки"
+  echo "║"
+  echo "║  🖥 Десктоп (Windows / macOS / Linux):"
+  echo "║  1. Кликните по ссылке tg://proxy?..."
+  echo "║     — Telegram Desktop откроется и"
+  echo "║     предложит подключить прокси"
+  echo "║  2. Нажмите «Подключить»"
+  echo "║"
+  echo "║  Вручную (Desktop):"
+  echo "║  1. Настройки → Продвинутые → Тип прокси"
+  echo "║  2. MTProto Proxy"
+  echo "║  3. Введите IP, Port, Secret"
+  echo "║  4. Сохранить"
+  echo "║"
+  echo "╚═════════════════════════════════════════════╝"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # domain_links_for_user — все ссылки пользователя
 # ─────────────────────────────────────────────────────────────────────────────
 domain_links_for_user() {
