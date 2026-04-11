@@ -245,8 +245,11 @@ user_link() {
 # ─────────────────────────────────────────────────────────────────────────────
 # user_show — подробная информация о пользователе с ссылками для всех доменов
 # ─────────────────────────────────────────────────────────────────────────────
+# user_show <username> [server_ip]
+# ─────────────────────────────────────────────────────────────────────────────
 user_show() {
   local username="$1"
+  local server_override="${2:-}"
 
   local line
   line=$(user_find "$username")
@@ -274,7 +277,11 @@ user_show() {
   fi
 
   local server
-  server=$(get_server_ip)
+  if [[ -n "$server_override" ]]; then
+    server="$server_override"
+  else
+    server=$(get_server_ip)
+  fi
 
   local found=0
   while IFS= read -r domain || [[ -n "$domain" ]]; do
